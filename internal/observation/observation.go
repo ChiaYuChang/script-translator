@@ -96,6 +96,11 @@ func Init(cfg Config) (*Observer, error) {
 	return initWithWriter(cfg, os.Stderr)
 }
 
+// InitWithWriter constructs an Observer writing console logs (when enabled) to consoleOut.
+func InitWithWriter(cfg Config, consoleOut io.Writer) (*Observer, error) {
+	return initWithWriter(cfg, consoleOut)
+}
+
 func initWithWriter(cfg Config, consoleOut io.Writer) (*Observer, error) {
 	cfg.Normalize()
 	if err := cfg.Validate(); err != nil {

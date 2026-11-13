@@ -1,0 +1,183 @@
+package main
+
+import (
+	"bytes"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/option"
+	"github.com/spf13/cobra"
+
+	"go-script-translate/internal/config"
+	"go-script-translate/internal/llm"
+	"go-script-translate/internal/model"
+	"go-script-translate/internal/observation"
+)
+
+const defaultConfigPath = "config.json"
+
+// recognizePayload is the JSON schema exchanged between `pipeline recognize`,
+// `pipeline translate`, and `entity insert` over files or Unix pipes.
+type recognizePayload struct {
+	Input    string         `json:"input,omitzero"`
+	Entities []model.Entity `json:"entities"`
+}
+
+type cliDeps struct {
+	stdin      io.Reader
+	stdout     io.Writer
+	stderr     io.Writer
+	stdinIsTTY func() bool
+}
+
+func defaultCLIDeps() cliDeps {
+	return cliDeps{
+		stdin:  os.Stdin,
+		stdout: os.Stdout,
+		stderr: os.Stderr,
+		stdinIsTTY: func() bool {
+			info, err := os.Stdin.Stat()
+			if err != nil {
+				return true
+			}
+			return info.Mode()&os.ModeCharDevice != 0
+		},
+	}
+}
+
+func newRootCmd(deps cliDeps) *cobra.Command {
+	root := &cobra.Command{
+		Use:           "translate",
+		Short:         "Japanese visual novel/game script localization CLI",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+	}
+	root.SetIn(deps.stdin)
+	root.SetOut(deps.stdout)
+	root.SetErr(deps.stderr)
+
+	root.AddCommand(newPipelineCmd(deps))
+	root.AddCommand(newEntityCmd(deps))
+	return root
+}
+
+func initObserverAndProvider(configPath string, deps cliDeps) (config.Config, *observation.Observer, *llm.Provider, error) {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return config.Config{}, nil, nil, err
+	}
+
+	obs, err := observation.InitWithWriter(cfg.Observation, deps.stderr)
+	if err != nil {
+		return config.Config{}, nil, nil, err
+	}
+
+	apiKey, err := cfg.Provider.ResolveAPIKey()
+	if err != nil {
+		_ = obs.Close()
+		return config.Config{}, nil, nil, err
+	}
+
+	opts := []option.RequestOption{option.WithAPIKey(apiKey)}
+	if cfg.Provider.BaseURL != "" {
+		opts = append(opts, option.WithBaseURL(cfg.Provider.BaseURL))
+	}
+	client := openai.NewClient(opts...)
+	provider := llm.NewProvider(
+		&client,
+		llm.WithLogger(obs.Logger),
+		llm.WithMetrics(obs.Metrics),
+	)
+	return cfg, obs, provider, nil
+}
+
+func readInputBytes(path string, stdin io.Reader) ([]byte, error) {
+	p := strings.TrimSpace(path)
+	if p == "" || p == "-" {
+		data, err := io.ReadAll(stdin)
+		if err != nil {
+			return nil, fmt.Errorf("read stdin: %w", err)
+		}
+		return data, nil
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return nil, fmt.Errorf("read %q: %w", p, err)
+	}
+	return data, nil
+}
+
+func decodeRecognizePayload(data []byte) (recognizePayload, error) {
+	if len(bytes.TrimSpace(data)) == 0 {
+		return recognizePayload{}, errors.New("empty entities JSON input")
+	}
+	var payload recognizePayload
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return recognizePayload{}, fmt.Errorf("parse entities JSON: %w", err)
+	}
+	if payload.Entities == nil {
+		return recognizePayload{}, errors.New("entities JSON missing required \"entities\" array")
+	}
+	return payload, nil
+}
+
+func writeOutputBytes(path string, data []byte, stdout io.Writer) error {
+	p := strings.TrimSpace(path)
+	if p == "" || p == "-" {
+		if _, err := stdout.Write(data); err != nil {
+			return fmt.Errorf("write stdout: %w", err)
+		}
+		return nil
+	}
+	return writeFileAtomic(p, data)
+}
+
+func writeFileAtomic(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create output directory %q: %w", dir, err)
+	}
+	tmp, err := os.CreateTemp(dir, ".out-*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = tmp.Close()
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if _, err := tmp.Write(data); err != nil {
+		return fmt.Errorf("write temp file: %w", err)
+	}
+	if err := tmp.Chmod(0o644); err != nil {
+		return fmt.Errorf("chmod temp file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp file: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("rename output file to %q: %w", path, err)
+	}
+	cleanup = false
+	return nil
+}
+
+func marshalIndentedLine(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	if err := json.MarshalWrite(&buf, v, jsontext.WithIndent("  ")); err != nil {
+		return nil, err
+	}
+	buf.WriteByte('\n')
+	return buf.Bytes(), nil
+}
