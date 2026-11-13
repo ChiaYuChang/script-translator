@@ -170,9 +170,9 @@ Return only the JSON object required by the output schema.`
 
 // RecognizeEntitiesParams configures a RecognizeEntities call.
 type RecognizeEntitiesParams struct {
-	Model      string         `json:"model"`
+	Model      string         `json:"model" jsonschema:"Model name for entity recognition"`
 	Dictionary []model.Entity `json:"-"`
-	MaxAttempt int            `json:"max_attempt"`
+	MaxAttempt int            `json:"max_attempt" jsonschema:"Maximum attempts per entity recognition call"`
 }
 
 // RecognizeEntities performs a stateless Responses API request. It returns
