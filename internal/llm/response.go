@@ -6,7 +6,23 @@ import (
 	"strings"
 
 	"github.com/openai/openai-go/v3/responses"
+
+	"go-script-translate/internal/observation"
 )
+
+func extractUsage(response *responses.Response) observation.TokenUsage {
+	if response == nil {
+		return observation.TokenUsage{}
+	}
+	return observation.TokenUsage{
+		InputTokens:      response.Usage.InputTokens,
+		CachedTokens:     response.Usage.InputTokensDetails.CachedTokens,
+		CacheWriteTokens: response.Usage.InputTokensDetails.CacheWriteTokens,
+		OutputTokens:     response.Usage.OutputTokens,
+		ReasoningTokens:  response.Usage.OutputTokensDetails.ReasoningTokens,
+		TotalTokens:      response.Usage.TotalTokens,
+	}
+}
 
 // finalJSONText extracts the completed final response, excluding reasoning
 // and handling refusals explicitly instead of blindly calling OutputText().

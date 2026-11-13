@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/responses"
 
 	"go-script-translate/internal/model"
+	"go-script-translate/internal/observation"
 )
 
 const TranslationPrompt = `You are an expert Japanese visual novel and game script localization translator working into Traditional Chinese for Taiwan (zh-TW).
@@ -201,14 +203,14 @@ func (p *Provider) Translate(
 				return nil, fmt.Errorf("translation: batch %d: %w", batchNum, err)
 			}
 
-			batchResult, lastErr = p.doTranslateBatchOnce(ctx, param.Model, schema, resolved, batchPrompt, req.Dialogue[start:end])
+			batchResult, lastErr = p.doTranslateBatchOnce(ctx, param.Model, schema, resolved, batchPrompt, req.Dialogue[start:end], batchNum, attempt+1)
 			if lastErr == nil {
 				break
 			}
 			if errors.Is(lastErr, context.Canceled) || errors.Is(lastErr, context.DeadlineExceeded) {
 				return nil, fmt.Errorf("translation: batch %d: %w", batchNum, lastErr)
 			}
-			slog.WarnContext(
+			p.log().WarnContext(
 				ctx,
 				"translation batch attempt failed",
 				slog.Int("batch", batchNum),
@@ -270,7 +272,15 @@ func (p *Provider) doTranslateBatchOnce(
 	resolved *jsonschema.Resolved,
 	userPrompt string,
 	batch []model.TranslateUnit,
-) ([]model.TranslatedText, error) {
+	batchNum int,
+	attempt int,
+) (result []model.TranslatedText, err error) {
+	started := time.Now()
+	var usage observation.TokenUsage
+	defer func() {
+		p.recordAttempt(ctx, observation.MetricTypeTranslationBatchUsage, modelName, batchNum, attempt, started, usage, err)
+	}()
+
 	resp, err := p.client.Responses.New(ctx, responses.ResponseNewParams{
 		Model:        modelName,
 		Instructions: openai.String(TranslationPrompt),
@@ -290,6 +300,7 @@ func (p *Provider) doTranslateBatchOnce(
 	if err != nil {
 		return nil, fmt.Errorf("request: %w", err)
 	}
+	usage = extractUsage(resp)
 
 	outputText, err := finalJSONText(resp)
 	if err != nil {

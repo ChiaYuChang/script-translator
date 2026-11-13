@@ -14,6 +14,7 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 
 	"go-script-translate/internal/llm"
+	"go-script-translate/internal/observation"
 )
 
 const (
@@ -65,6 +66,7 @@ type Config struct {
 	Provider          ProviderConfig              `json:"provider" jsonschema:"OpenAI-compatible provider connection settings"`
 	EntityRecognition llm.RecognizeEntitiesParams `json:"entity_recognition" jsonschema:"Entity recognition step parameters"`
 	Translation       llm.TranslateParams         `json:"translation" jsonschema:"Translation step parameters"`
+	Observation       observation.Config          `json:"observation" jsonschema:"Logging and metrics output settings"`
 }
 
 // Default returns a Config populated with default operational settings.
@@ -81,6 +83,7 @@ func Default() Config {
 			BatchSize:  DefaultBatchSize,
 			MaxAttempt: DefaultMaxAttempt,
 		},
+		Observation: observation.DefaultConfig(),
 	}
 }
 
@@ -95,8 +98,8 @@ func Schema() (*jsonschema.Schema, error) {
 	minOneFloat := 1.0
 	minOneInt := 1
 
-	// Allow omitting "provider" so ApplyDefaults creates it and fills api_key_env.
-	schema.Required = withoutStrings(schema.Required, "provider")
+	// Allow omitting "provider" and "observation" so defaults fill nested settings.
+	schema.Required = withoutStrings(schema.Required, "provider", "observation")
 	if prov := schema.Properties["provider"]; prov != nil {
 		if apiKeyEnv := prov.Properties["api_key_env"]; apiKeyEnv != nil {
 			b, err := json.Marshal(DefaultAPIKeyEnv)
@@ -104,6 +107,22 @@ func Schema() (*jsonschema.Schema, error) {
 				return nil, fmt.Errorf("config: marshal default api_key_env: %w", err)
 			}
 			apiKeyEnv.Default = b
+		}
+	}
+
+	if obs := schema.Properties["observation"]; obs != nil {
+		obs.Required = withoutStrings(obs.Required, "log", "metric")
+		if logSchema := obs.Properties["log"]; logSchema != nil {
+			logSchema.Required = withoutStrings(logSchema.Required, "console", "file")
+			if consoleSchema := logSchema.Properties["console"]; consoleSchema != nil {
+				consoleSchema.Required = withoutStrings(consoleSchema.Required, "enable")
+			}
+			if fileSchema := logSchema.Properties["file"]; fileSchema != nil {
+				fileSchema.Required = withoutStrings(fileSchema.Required, "enable")
+			}
+		}
+		if metricSchema := obs.Properties["metric"]; metricSchema != nil {
+			metricSchema.Required = withoutStrings(metricSchema.Required, "enable")
 		}
 	}
 
@@ -219,6 +238,7 @@ func (c *Config) normalize() {
 	c.Provider.APIKeyEnv = strings.TrimSpace(c.Provider.APIKeyEnv)
 	c.EntityRecognition.Model = strings.TrimSpace(c.EntityRecognition.Model)
 	c.Translation.Model = strings.TrimSpace(c.Translation.Model)
+	c.Observation.Normalize()
 }
 
 // Validate checks semantic constraints not expressible in structural JSON Schema
@@ -249,6 +269,10 @@ func (c Config) Validate() error {
 	}
 	if c.Translation.MaxAttempt <= 0 {
 		return fmt.Errorf("translation.max_attempt must be positive (got %d)", c.Translation.MaxAttempt)
+	}
+
+	if err := c.Observation.Validate(); err != nil {
+		return err
 	}
 	return nil
 }

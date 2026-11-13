@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/responses"
 
 	"go-script-translate/internal/model"
+	"go-script-translate/internal/observation"
 )
 
 // recognitionOutput is deliberately distinct from model.Entity: the model
@@ -215,14 +217,14 @@ func (p *Provider) RecognizeEntities(
 			return nil, fmt.Errorf("entity recognition: %w", err)
 		}
 
-		proposals, lastErr = p.doRecognizeEntitiesOnce(ctx, param.Model, schema, resolved, prompt)
+		proposals, lastErr = p.doRecognizeEntitiesOnce(ctx, param.Model, schema, resolved, prompt, attempt+1)
 		if lastErr == nil {
 			break
 		}
 		if errors.Is(lastErr, context.Canceled) || errors.Is(lastErr, context.DeadlineExceeded) {
 			return nil, fmt.Errorf("entity recognition: %w", lastErr)
 		}
-		slog.WarnContext(
+		p.log().WarnContext(
 			ctx,
 			"entity recognition attempt failed",
 			slog.Int("attempt", attempt+1),
@@ -243,7 +245,14 @@ func (p *Provider) doRecognizeEntitiesOnce(
 	schemaMap map[string]any,
 	resolved *jsonschema.Resolved,
 	requestBody string,
-) ([]recognizedEntity, error) {
+	attempt int,
+) (proposals []recognizedEntity, err error) {
+	started := time.Now()
+	var usage observation.TokenUsage
+	defer func() {
+		p.recordAttempt(ctx, observation.MetricTypeEntityUsage, modelName, 0, attempt, started, usage, err)
+	}()
+
 	resp, err := p.client.Responses.New(ctx, responses.ResponseNewParams{
 		Model:        modelName,
 		Instructions: openai.String(EntityRecognitionPrompt),
@@ -263,6 +272,7 @@ func (p *Provider) doRecognizeEntitiesOnce(
 	if err != nil {
 		return nil, fmt.Errorf("request: %w", err)
 	}
+	usage = extractUsage(resp)
 
 	outputText, err := finalJSONText(resp)
 	if err != nil {

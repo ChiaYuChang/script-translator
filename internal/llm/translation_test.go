@@ -1,10 +1,12 @@
 package llm
 
 import (
+	"bytes"
 	"context"
 	"encoding/json/v2"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -16,6 +18,7 @@ import (
 	"github.com/openai/openai-go/v3/option"
 
 	"go-script-translate/internal/model"
+	"go-script-translate/internal/observation"
 )
 
 type capturedResponseRequest struct {
@@ -40,7 +43,7 @@ func defaultTestTranslateParams() TranslateParams {
 	}
 }
 
-func newTestProvider(t *testing.T, handler http.HandlerFunc) (*Provider, *httptest.Server) {
+func newTestProvider(t *testing.T, handler http.HandlerFunc, opts ...ProviderOption) (*Provider, *httptest.Server) {
 	t.Helper()
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
@@ -50,10 +53,14 @@ func newTestProvider(t *testing.T, handler http.HandlerFunc) (*Provider, *httpte
 		option.WithAPIKey("test-key"),
 		option.WithMaxRetries(0),
 	)
-	return NewProvider(&client), srv
+	return NewProvider(&client, opts...), srv
 }
 
 func writeJSONResponse(t *testing.T, w http.ResponseWriter, status string, contentItem map[string]any) {
+	writeJSONResponseWithUsage(t, w, status, contentItem, nil)
+}
+
+func writeJSONResponseWithUsage(t *testing.T, w http.ResponseWriter, status string, contentItem map[string]any, usage map[string]any) {
 	t.Helper()
 	w.Header().Set("Content-Type", "application/json")
 	resp := map[string]any{
@@ -69,6 +76,9 @@ func writeJSONResponse(t *testing.T, w http.ResponseWriter, status string, conte
 				"content": []map[string]any{contentItem},
 			},
 		},
+	}
+	if usage != nil {
+		resp["usage"] = usage
 	}
 	if err := json.MarshalWrite(w, resp); err != nil {
 		t.Fatalf("encode mock response: %v", err)
@@ -721,6 +731,138 @@ func TestTranslationSchema(t *testing.T) {
 	} {
 		if err := ValidateJSON(resolved, invalid); err == nil {
 			t.Errorf("expected invalid translation payload to fail schema: %s", invalid)
+		}
+	}
+}
+
+func TestProviderRecordsMetricsAndLogsAcrossRetries(t *testing.T) {
+	var calls atomic.Int32
+	const runID = "01950000-0000-7000-8000-000000000001"
+	var metricBuf bytes.Buffer
+	metrics := observation.NewMetrics(runID, &metricBuf)
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelInfo})).
+		With(slog.String("run_id", runID))
+
+	p, _ := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		switch calls.Add(1) {
+		case 1:
+			// Entity recognition succeeds.
+			writeJSONResponseWithUsage(t, w, "completed", map[string]any{
+				"type": "output_text",
+				"text": mustMarshalJSON(t, recognitionOutput{
+					Entity: []recognizedEntity{{
+						Canonical: model.NamePair{From: "秋葉原", To: "秋葉原"},
+						Aliases:   []model.NamePair{},
+					}},
+				}),
+			}, map[string]any{
+				"input_tokens":  50,
+				"output_tokens": 15,
+				"total_tokens":  65,
+				"input_tokens_details": map[string]any{
+					"cached_tokens": 10,
+				},
+				"output_tokens_details": map[string]any{
+					"reasoning_tokens": 5,
+				},
+			})
+		case 2:
+			// Translation attempt 1 fails schema validation, but usage is still recorded.
+			writeJSONResponseWithUsage(t, w, "completed", map[string]any{
+				"type": "output_text",
+				"text": `{"dialogue":[]}`,
+			}, map[string]any{
+				"input_tokens":  80,
+				"output_tokens": 10,
+				"total_tokens":  90,
+			})
+		default:
+			// Translation attempt 2 succeeds.
+			writeJSONResponseWithUsage(t, w, "completed", map[string]any{
+				"type": "output_text",
+				"text": mustMarshalJSON(t, translationOutput{
+					Dialogue: model.TranslateBatchOutput{{Index: 1, Text: []string{"走吧"}}},
+				}),
+			}, map[string]any{
+				"input_tokens":  80,
+				"output_tokens": 20,
+				"total_tokens":  100,
+			})
+		}
+	}, WithLogger(logger), WithMetrics(metrics))
+
+	req := model.TranslateRequest{
+		Dialogue: []model.TranslateUnit{{Index: 1, Speaker: "A", Text: []string{"秋葉原へ行こう"}}},
+	}
+	if _, err := p.RecognizeEntities(context.Background(), req.Transcript(), RecognizeEntitiesParams{
+		Model:      "gpt-entity",
+		MaxAttempt: 1,
+	}); err != nil {
+		t.Fatalf("RecognizeEntities failed: %v", err)
+	}
+	if _, err := p.Translate(context.Background(), req, TranslateParams{
+		Model:      "gpt-translate",
+		BatchSize:  1,
+		MaxAttempt: 2,
+	}); err != nil {
+		t.Fatalf("Translate failed: %v", err)
+	}
+
+	if err := metrics.WriteTotal(); err != nil {
+		t.Fatalf("WriteTotal failed: %v", err)
+	}
+
+	metricLines := strings.Split(strings.TrimSpace(metricBuf.String()), "\n")
+	if len(metricLines) != 4 {
+		t.Fatalf("expected 4 JSONL metric events (3 calls + total_usage), got %d:\n%s", len(metricLines), metricBuf.String())
+	}
+
+	wantTypes := []string{
+		observation.MetricTypeEntityUsage,
+		observation.MetricTypeTranslationBatchUsage,
+		observation.MetricTypeTranslationBatchUsage,
+		observation.MetricTypeTotalUsage,
+	}
+	for i, line := range metricLines {
+		var event map[string]any
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatalf("invalid metric JSONL line %d: %v", i, err)
+		}
+		if event["type"] != wantTypes[i] {
+			t.Fatalf("metric line %d type = %v, want %q", i, event["type"], wantTypes[i])
+		}
+		if event["run_id"] != runID {
+			t.Fatalf("metric line %d run_id = %v, want %q", i, event["run_id"], runID)
+		}
+	}
+
+	report := metrics.Snapshot()
+	if report.Requests != 3 || report.Errors != 1 || report.Retries != 1 {
+		t.Fatalf("unexpected report counts: %#v", report)
+	}
+	if report.Usage.InputTokens != 210 ||
+		report.Usage.CachedTokens != 10 ||
+		report.Usage.OutputTokens != 45 ||
+		report.Usage.ReasoningTokens != 5 ||
+		report.Usage.TotalTokens != 255 {
+		t.Fatalf("unexpected aggregated usage: %#v", report.Usage)
+	}
+
+	logLines := strings.Split(strings.TrimSpace(logBuf.String()), "\n")
+	if len(logLines) != 3 {
+		t.Fatalf("expected 3 JSON log lines (1 recognize ok, 1 retry warn, 1 translate ok), got %d:\n%s", len(logLines), logBuf.String())
+	}
+	for _, line := range logLines {
+		var entry map[string]any
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("invalid JSON log line %q: %v", line, err)
+		}
+		if entry["run_id"] != runID {
+			t.Fatalf("expected log run_id %q, got %v", runID, entry["run_id"])
+		}
+		if entry["time"] == "" || entry["time"] == nil {
+			t.Fatalf("expected timestamp in log entry: %#v", entry)
 		}
 	}
 }

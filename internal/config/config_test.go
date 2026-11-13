@@ -49,6 +49,9 @@ func TestParseAppliesDefaultsAndTrimsWhitespace(t *testing.T) {
 	if cfg.Translation.MaxAttempt != DefaultMaxAttempt {
 		t.Fatalf("expected default translation max_attempt %d, got %d", DefaultMaxAttempt, cfg.Translation.MaxAttempt)
 	}
+	if !cfg.Observation.Log.Console.Enable || cfg.Observation.Log.File.Enable || cfg.Observation.Metric.Enable {
+		t.Fatalf("unexpected default observation config: %#v", cfg.Observation)
+	}
 }
 
 func TestLoadFromFileAndExplicitOverrides(t *testing.T) {
@@ -65,6 +68,17 @@ func TestLoadFromFileAndExplicitOverrides(t *testing.T) {
 			"model": "model-b",
 			"batch_size": 15,
 			"max_attempt": 4
+		},
+		"observation": {
+			"log": {
+				"level": "debug",
+				"console": {"enable": false},
+				"file": {"enable": true, "file": "logs/app.jsonl"}
+			},
+			"metric": {
+				"enable": true,
+				"file": "metrics/run.json"
+			}
 		}
 	}`
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
@@ -78,7 +92,13 @@ func TestLoadFromFileAndExplicitOverrides(t *testing.T) {
 	if cfg.Provider.APIKeyEnv != "CUSTOM_LLM_KEY" ||
 		cfg.EntityRecognition.MaxAttempt != 2 ||
 		cfg.Translation.BatchSize != 15 ||
-		cfg.Translation.MaxAttempt != 4 {
+		cfg.Translation.MaxAttempt != 4 ||
+		cfg.Observation.Log.Level != "debug" ||
+		cfg.Observation.Log.Console.Enable ||
+		!cfg.Observation.Log.File.Enable ||
+		cfg.Observation.Log.File.File != "logs/app.jsonl" ||
+		!cfg.Observation.Metric.Enable ||
+		cfg.Observation.Metric.File != "metrics/run.json" {
 		t.Fatalf("unexpected loaded config: %#v", cfg)
 	}
 }
@@ -131,6 +151,14 @@ func TestParseValidationErrors(t *testing.T) {
 		{
 			name: "negative translation max_attempt",
 			raw:  `{"entity_recognition":{"model":"m"},"translation":{"model":"m","max_attempt":-1}}`,
+		},
+		{
+			name: "observation file log enabled without file path",
+			raw:  `{"entity_recognition":{"model":"m"},"translation":{"model":"m"},"observation":{"log":{"file":{"enable":true}}}}`,
+		},
+		{
+			name: "observation metric enabled without file path",
+			raw:  `{"entity_recognition":{"model":"m"},"translation":{"model":"m"},"observation":{"metric":{"enable":true}}}`,
 		},
 	}
 
