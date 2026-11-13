@@ -1,0 +1,84 @@
+﻿//----------------------------------------------------------------
+//作成者：DEMO_AUTHOR
+//----------------------------------------------------------------
+//【背景：DAILY_001】
+<BG>nc_cafe_morning,IN,1000
+<BGM_PLAY>bgm_daily_01,1000
+<UI_DISP>ON,0
+<NAME_PLATE>
+　昼休みの少し前。
+駅前の小さなカフェは、まだ空いていた。
+<PAUSE>
+<ACTOR>0,chr_minato_a,CENTER,CENTER,IN,linear,1000
+<NAME_PLATE>新堂ミナト
+「やっと座れた……。
+　朝からずっと立ちっぱなしだったから、
+　もう足がパンパンだよ」
+<PAUSE>
+<ACTOR>0,chr_minato_a,CENTER,LEFT,NONE,linear,500
+<ACTOR>1,chr_yui_a,RIGHT,RIGHT,IN,linear,1000
+<NAME_PLATE>朝倉ユイ
+「お疲れさま。
+　でも、まだ午前中だよ？」
+<PAUSE>
+<NAME_PLATE>新堂ミナト
+「それは言わないで。
+　時計を見るたびに、
+　時間が止まってる気がするんだ」
+<PAUSE>
+<NAME_PLATE>朝倉ユイ
+「じゃあ、甘いものでも頼む？
+　ここのプリン、けっこうおいしいらしいよ」
+<PAUSE>
+<NAME_PLATE>新堂ミナト
+「プリンかあ。
+　お昼前だけど、今日は頑張ったし、
+　ひとつくらいならいいよね」
+<PAUSE>
+<ACTOR>2,chr_staff_a,LEFT,LEFT,IN,linear,1000
+<NAME_PLATE>店員
+「ご注文はお決まりですか？」
+<PAUSE>
+<NAME_PLATE>朝倉ユイ
+「アイスコーヒーをひとつ。
+　あと、プリンもお願いします」
+<PAUSE>
+<NAME_PLATE>新堂ミナト
+「私も同じので。
+　あ、コーヒーはミルク多めでお願いします」
+<PAUSE>
+<NAME_PLATE>店員
+「かしこまりました。
+　少々お待ちください」
+<PAUSE>
+<ACTOR_OUT>2,LEFT,linear,500
+<NAME_PLATE>朝倉ユイ
+「同じのにするんだ？」
+<PAUSE>
+<NAME_PLATE>新堂ミナト
+「ユイが選ぶものなら、
+　だいたい外れないからね」
+<PAUSE>
+<NAME_PLATE>朝倉ユイ
+「そう言われると責任重大だなあ。
+　プリンが普通だったらどうする？」
+<PAUSE>
+<NAME_PLATE>新堂ミナト
+「そのときは、
+　午後のおやつも付き合ってもらう」
+<PAUSE>
+<NAME_PLATE>朝倉ユイ
+「結局、もう一回食べるんだ」
+<PAUSE>
+<NAME_PLATE>
+　二人は顔を見合わせて笑った。
+忙しい一日の中の、短い休憩時間だった。
+<PAUSE>
+<GROUP>
+<ACTOR_OUT>0,LEFT,linear,500
+<ACTOR_OUT>1,RIGHT,linear,500
+</GROUP>
+<UI_DISP>OFF,500
+<BGM_STOP>1000
+<BG_OUT>1000
+<SCENARIO_END>

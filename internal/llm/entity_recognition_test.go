@@ -1,0 +1,275 @@
+package llm
+
+import (
+	"context"
+	"encoding/json/v2"
+	"net/http"
+	"reflect"
+	"sync/atomic"
+	"testing"
+
+	"go-script-translate/internal/model"
+)
+
+func TestMatchKnownEntities(t *testing.T) {
+	dictionary := []model.Entity{
+		{ID: 1, Canonical: model.NamePair{From: "新堂ミナト", To: "新堂湊"}, Aliases: []model.NamePair{{From: "ミナト", To: "湊"}}},
+		{ID: 2, Canonical: model.NamePair{From: "朝倉ユイ", To: "朝倉由依"}},
+		{ID: 3, Canonical: model.NamePair{From: "", To: ""}},
+		{ID: 4, Canonical: model.NamePair{From: "東京", To: "東京"}},
+	}
+	got := MatchKnownEntities("朝倉ユイ:ミナトは元気？", dictionary)
+	if len(got) != 2 || got[0].ID != 1 || got[1].ID != 2 {
+		t.Fatalf("unexpected matches: %#v", got)
+	}
+	if n := len(MatchKnownEntities("", dictionary)); n != 0 {
+		t.Fatalf("matched %d entities in empty script", n)
+	}
+}
+
+func TestMergeRecognizedEntities(t *testing.T) {
+	known := model.Entity{
+		ID:        1,
+		Canonical: model.NamePair{From: "新堂ミナト", To: "新堂湊"},
+		Aliases:   []model.NamePair{{From: "ミナト", To: "湊"}},
+	}
+	dictionary := []model.Entity{known}
+	script := "新堂ミナト:ミナトちゃんは秋葉原に行きたい。"
+	proposals := []recognizedEntity{
+		{
+			Canonical: model.NamePair{From: "新堂ミナト", To: "錯誤的覆寫"},
+			Aliases: []model.NamePair{
+				{From: "ミナト", To: "錯誤的覆寫"},
+				{From: "ミナトちゃん", To: "小湊"},
+				{From: "ミナトちゃん", To: "重複別名"},
+			},
+		},
+		{Canonical: model.NamePair{From: "秋葉原", To: "秋葉原"}, Aliases: []model.NamePair{}},
+		{Canonical: model.NamePair{From: "不存在的地名", To: "虛構地點"}},
+		{Canonical: model.NamePair{From: "ミナト", To: "錯誤的獨立人物"}},
+	}
+	got := mergeRecognizedEntities(script, []model.Entity{known}, dictionary, proposals)
+	want := []model.Entity{
+		{ID: 1, Canonical: model.NamePair{From: "新堂ミナト", To: "新堂湊"}, Aliases: []model.NamePair{{From: "ミナト", To: "湊"}, {From: "ミナトちゃん", To: "小湊"}}},
+		{Canonical: model.NamePair{From: "秋葉原", To: "秋葉原"}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("merge mismatch:\ngot  %#v\nwant %#v", got, want)
+	}
+	if dictionary[0].Aliases[0].To != "湊" || len(dictionary[0].Aliases) != 1 {
+		t.Fatal("merge modified the original dictionary")
+	}
+}
+
+func TestMergeUnmatchedKnownEntityAlias(t *testing.T) {
+	dictionary := []model.Entity{{ID: 2, Canonical: model.NamePair{From: "朝倉ユイ", To: "朝倉由依"}}}
+	got := mergeRecognizedEntities("ユイちゃん:おはよう", nil, dictionary, []recognizedEntity{{
+		Canonical: model.NamePair{From: "朝倉ユイ", To: "不得覆寫"},
+		Aliases:   []model.NamePair{{From: "ユイちゃん", To: "小由依"}},
+	}})
+	if len(got) != 1 || got[0].ID != 2 || got[0].Canonical.To != "朝倉由依" || len(got[0].Aliases) != 1 {
+		t.Fatalf("unexpected output: %#v", got)
+	}
+}
+
+func TestNewAliasDoesNotStealExistingName(t *testing.T) {
+	dictionary := []model.Entity{
+		{ID: 1, Canonical: model.NamePair{From: "佐藤", To: "佐藤"}},
+		{ID: 2, Canonical: model.NamePair{From: "新堂ミナト", To: "新堂湊"}},
+	}
+	script := "新堂ミナト:佐藤に会う"
+	known := MatchKnownEntities(script, dictionary)
+	got := mergeRecognizedEntities(script, known, dictionary, []recognizedEntity{{
+		Canonical: model.NamePair{From: "新堂ミナト", To: "新堂湊"},
+		Aliases:   []model.NamePair{{From: "佐藤", To: "別名錯誤"}},
+	}})
+	if len(got) != 2 || len(got[1].Aliases) != 0 {
+		t.Fatalf("unexpected mapping: %#v", got)
+	}
+}
+
+func TestRecognitionSchema(t *testing.T) {
+	if _, err := ToSchemaMap(nil); err == nil {
+		t.Fatal("expected ToSchemaMap(nil) to return error")
+	}
+	schemaMap, err := ToSchemaMap(recognitionSchema)
+	if err != nil {
+		t.Fatalf("ToSchemaMap(recognitionSchema): %v", err)
+	}
+	if len(schemaMap) == 0 {
+		t.Fatal("expected non-empty recognition schema map")
+	}
+
+	resolved, err := recognitionSchema.Resolve(nil)
+	if err != nil {
+		t.Fatalf("resolve recognition schema: %v", err)
+	}
+
+	validBytes, err := json.Marshal(recognitionOutput{
+		Entity: []recognizedEntity{
+			{
+				Canonical: model.NamePair{From: "秋葉原", To: "秋葉原"},
+				Aliases:   []model.NamePair{},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateJSON(resolved, string(validBytes)); err != nil {
+		t.Fatalf("expected valid recognition payload to pass schema: %v", err)
+	}
+
+	for _, invalid := range []string{
+		`{}`,
+		`{"entity":null}`,
+		`{"entity":[{"canonical":{"from":"A","to":"甲"}}]}`,
+		`{"entity":[{"canonical":{"from":"A","to":"甲"},"aliases":null}]}`,
+		`{"entity":[{"canonical":{"from":"A","to":"甲","extra":1},"aliases":[]}]}`,
+		`{"entity":[{"canonical":{"from":"A"},"aliases":[]}]}`,
+	} {
+		if err := ValidateJSON(resolved, invalid); err == nil {
+			t.Errorf("expected invalid recognition payload to fail schema: %s", invalid)
+		}
+	}
+}
+
+func TestRecognizeEntitiesUsesPassedModel(t *testing.T) {
+	var captured capturedResponseRequest
+	mockResp, err := json.Marshal(recognitionOutput{
+		Entity: []recognizedEntity{
+			{
+				Canonical: model.NamePair{From: "秋葉原", To: "秋葉原"},
+				Aliases:   []model.NamePair{},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	p, _ := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		captured = decodeCapturedRequest(t, r)
+		writeJSONResponse(t, w, "completed", map[string]any{
+			"type": "output_text",
+			"text": string(mockResp),
+		})
+	})
+
+	transcript := model.TranslateRequest{
+		Dialogue: []model.TranslateUnit{
+			{Index: 0, Speaker: "新堂ミナト", Text: []string{"秋葉原へ行こう。"}},
+		},
+	}.Transcript()
+	dictionary := []model.Entity{
+		{ID: 1, Canonical: model.NamePair{From: "新堂ミナト", To: "新堂湊"}},
+	}
+
+	if _, err := p.RecognizeEntities(context.Background(), transcript, RecognizeEntitiesParams{
+		Model:      " ",
+		Dictionary: dictionary,
+		MaxAttempt: 1,
+	}); err == nil {
+		t.Fatal("expected error for empty model name")
+	}
+	if _, err := p.RecognizeEntities(context.Background(), transcript, RecognizeEntitiesParams{
+		Model:      "entity-model-v1",
+		Dictionary: dictionary,
+		MaxAttempt: 0,
+	}); err == nil {
+		t.Fatal("expected error for non-positive max attempt")
+	}
+	if _, err := p.RecognizeEntities(context.Background(), " \n ", RecognizeEntitiesParams{
+		Model:      "entity-model-v1",
+		Dictionary: dictionary,
+		MaxAttempt: 1,
+	}); err == nil {
+		t.Fatal("expected error for empty transcript")
+	}
+
+	got, err := p.RecognizeEntities(context.Background(), transcript, RecognizeEntitiesParams{
+		Model:      "entity-model-v1",
+		Dictionary: dictionary,
+		MaxAttempt: 1,
+	})
+	if err != nil {
+		t.Fatalf("RecognizeEntities failed: %v", err)
+	}
+	if captured.Model != "entity-model-v1" {
+		t.Fatalf("expected model entity-model-v1, got %q", captured.Model)
+	}
+	if len(got) != 2 || got[0].Canonical.To != "新堂湊" || got[1].Canonical.To != "秋葉原" {
+		t.Fatalf("unexpected recognized entities: %#v", got)
+	}
+}
+
+func TestRecognizeEntitiesRejectsInvalidSchemaOutput(t *testing.T) {
+	p, _ := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		writeJSONResponse(t, w, "completed", map[string]any{
+			"type": "output_text",
+			"text": `{"entity":[{"canonical":{"from":"秋葉原","to":"秋葉原"},"aliases":null}]}`,
+		})
+	})
+
+	transcript := model.TranslateRequest{
+		Dialogue: []model.TranslateUnit{{Index: 0, Speaker: "A", Text: []string{"秋葉原"}}},
+	}.Transcript()
+	if _, err := p.RecognizeEntities(context.Background(), transcript, RecognizeEntitiesParams{
+		Model:      "entity-model-v1",
+		MaxAttempt: 1,
+	}); err == nil {
+		t.Fatal("expected schema validation error for null aliases")
+	}
+}
+
+func TestRecognizeEntitiesRetriesWithinMaxAttemptAndSucceeds(t *testing.T) {
+	var calls atomic.Int32
+	mockResp, err := json.Marshal(recognitionOutput{
+		Entity: []recognizedEntity{
+			{
+				Canonical: model.NamePair{From: "秋葉原", To: "秋葉原"},
+				Aliases:   []model.NamePair{},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	p, _ := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		switch calls.Add(1) {
+		case 1:
+			writeJSONResponse(t, w, "completed", map[string]any{
+				"type": "output_text",
+				"text": `{"entity": [`,
+			})
+		case 2:
+			writeJSONResponse(t, w, "completed", map[string]any{
+				"type": "output_text",
+				"text": `{"entity":[{"canonical":{"from":"秋葉原","to":"秋葉原"},"aliases":null}]}`,
+			})
+		default:
+			writeJSONResponse(t, w, "completed", map[string]any{
+				"type": "output_text",
+				"text": string(mockResp),
+			})
+		}
+	})
+
+	transcript := model.TranslateRequest{
+		Dialogue: []model.TranslateUnit{{Index: 0, Speaker: "A", Text: []string{"秋葉原"}}},
+	}.Transcript()
+	got, err := p.RecognizeEntities(context.Background(), transcript, RecognizeEntitiesParams{
+		Model:      "entity-model-v1",
+		MaxAttempt: 3,
+	})
+	if err != nil {
+		t.Fatalf("expected retry to succeed, got: %v", err)
+	}
+	if calls.Load() != 3 {
+		t.Fatalf("expected 3 attempts, got %d", calls.Load())
+	}
+	if len(got) != 1 || got[0].Canonical.From != "秋葉原" {
+		t.Fatalf("unexpected recognized entities: %#v", got)
+	}
+}
