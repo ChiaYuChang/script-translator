@@ -1,0 +1,31 @@
+{
+  "provider": {
+    "base_url": "https://openrouter.ai/api/v1",
+    "api_key_env": "OPENROUTER_APIKEY"
+  },
+  "entity_recognition": {
+    "model": "nvidia/nemotron-3.5-super-vl:free",
+    "max_attempt": 3
+  },
+  "translation": {
+    "model": "nvidia/nemotron-3.5-super-vl:free",
+    "batch_size": 8,
+    "max_attempt": 3
+  },
+  "observation": {
+    "log": {
+      "level": "info",
+      "console": {
+        "enable": true
+      },
+      "file": {
+        "enable": true,
+        "file": "e2e/translate/logs.jsonl"
+      }
+    },
+    "metric": {
+      "enable": true,
+      "file": "e2e/translate/metrics.jsonl"
+    }
+  }
+}

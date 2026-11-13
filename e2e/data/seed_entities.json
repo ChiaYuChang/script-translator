@@ -1,0 +1,33 @@
+{
+  "entities": [
+    {
+      "id": 1,
+      "canonical": {
+        "from": "新堂ミナト",
+        "to": "新堂湊"
+      },
+      "aliases": [
+        {
+          "from": "ミナト",
+          "to": "湊"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "canonical": {
+        "from": "朝倉ユイ",
+        "to": "朝倉由依"
+      },
+      "aliases": []
+    },
+    {
+      "id": 3,
+      "canonical": {
+        "from": "桜ヶ丘駅",
+        "to": "櫻丘車站"
+      },
+      "aliases": []
+    }
+  ]
+}

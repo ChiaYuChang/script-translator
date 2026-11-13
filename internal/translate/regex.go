@@ -4,6 +4,6 @@ import "regexp"
 
 var (
 	RegexNote = regexp.MustCompile("^//(.*)")
-	RegexCmd  = regexp.MustCompile("^<([A-Z_]+)>(.*)$")
+	RegexCmd  = regexp.MustCompile("^<(/?[A-Z_]+)>(.*)$")
 	RegexText = regexp.MustCompile(`「([^「」]+)」`)
 )

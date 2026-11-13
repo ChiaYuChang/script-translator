@@ -129,6 +129,7 @@ func writeMockResponsesServer(t *testing.T) *httptest.Server {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("\n         \n         \n"))
 		if err := json.MarshalWrite(w, map[string]any{
 			"id":     "resp_cli_test",
 			"object": "response",
@@ -176,7 +177,8 @@ func TestPipelineRecognizePipesToTranslateAndEntityInsert(t *testing.T) {
 	metricPath := filepath.Join(dir, "metrics.jsonl")
 	cfgPath := writeTestConfig(t, dir, srv.URL+"/v1", logPath, metricPath)
 
-	// Step 1: pipeline recognize -> stdout (stderr keeps logs isolated).
+	// Step 1: pipeline recognize -> stdout (stderr keeps logs isolated) + save raw response.
+	rawDir := filepath.Join(dir, "raw")
 	var recStdout, recStderr bytes.Buffer
 	recCmd := newRootCmd(cliDeps{
 		stdin:      &bytes.Buffer{},
@@ -189,9 +191,17 @@ func TestPipelineRecognizePipesToTranslateAndEntityInsert(t *testing.T) {
 		"-c", cfgPath,
 		"-i", scriptPath,
 		"-d", dictPath,
+		"--save-raw", rawDir,
 	})
 	if err := recCmd.Execute(); err != nil {
 		t.Fatalf("pipeline recognize failed: %v\nstderr:\n%s", err, recStderr.String())
+	}
+	rawBytes, err := os.ReadFile(filepath.Join(rawDir, "recognize_001.json"))
+	if err != nil {
+		t.Fatalf("expected raw response fixture recognize_001.json: %v", err)
+	}
+	if strings.HasPrefix(string(rawBytes), "\n") || strings.HasPrefix(string(rawBytes), " ") {
+		t.Fatalf("expected leading keep-alive whitespace trimmed in raw fixture, got: %q", string(rawBytes[:min(40, len(rawBytes))]))
 	}
 
 	payload, err := decodeRecognizePayload(recStdout.Bytes())

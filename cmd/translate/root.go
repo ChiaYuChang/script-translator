@@ -7,9 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
@@ -68,7 +70,7 @@ func newRootCmd(deps cliDeps) *cobra.Command {
 	return root
 }
 
-func initObserverAndProvider(configPath string, deps cliDeps) (config.Config, *observation.Observer, *llm.Provider, error) {
+func initObserverAndProvider(configPath, saveRawDir, rawPrefix string, deps cliDeps) (config.Config, *observation.Observer, *llm.Provider, error) {
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return config.Config{}, nil, nil, err
@@ -89,6 +91,9 @@ func initObserverAndProvider(configPath string, deps cliDeps) (config.Config, *o
 	if cfg.Provider.BaseURL != "" {
 		opts = append(opts, option.WithBaseURL(cfg.Provider.BaseURL))
 	}
+	if dir := strings.TrimSpace(saveRawDir); dir != "" {
+		opts = append(opts, rawResponseMiddleware(dir, rawPrefix, obs))
+	}
 	client := openai.NewClient(opts...)
 	provider := llm.NewProvider(
 		&client,
@@ -96,6 +101,40 @@ func initObserverAndProvider(configPath string, deps cliDeps) (config.Config, *o
 		llm.WithMetrics(obs.Metrics),
 	)
 	return cfg, obs, provider, nil
+}
+
+func rawResponseMiddleware(dir, prefix string, obs *observation.Observer) option.RequestOption {
+	var seq atomic.Int32
+	return option.WithMiddleware(func(req *http.Request, next option.MiddlewareNext) (*http.Response, error) {
+		resp, err := next(req)
+		if err != nil || resp == nil || resp.Body == nil {
+			return resp, err
+		}
+		body, readErr := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		resp.Body = io.NopCloser(bytes.NewReader(body))
+		if readErr != nil {
+			obs.Logger.Warn("failed to read raw response body", "error", readErr)
+			return resp, err
+		}
+
+		trimmed := bytes.TrimSpace(body)
+		if len(trimmed) == 0 {
+			return resp, err
+		}
+
+		n := seq.Add(1)
+		name := fmt.Sprintf("%s_%03d.json", prefix, n)
+		if resp.StatusCode >= 300 {
+			name = fmt.Sprintf("%s_%03d_err_%d.json", prefix, n, resp.StatusCode)
+		}
+		path := filepath.Join(dir, name)
+		data := append(append([]byte(nil), trimmed...), '\n')
+		if writeErr := writeFileAtomic(path, data); writeErr != nil {
+			obs.Logger.Warn("failed to save raw response", "path", path, "error", writeErr)
+		}
+		return resp, err
+	})
 }
 
 func readInputBytes(path string, stdin io.Reader) ([]byte, error) {

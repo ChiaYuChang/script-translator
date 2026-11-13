@@ -172,6 +172,21 @@ func TestReadTerminalNewline(t *testing.T) {
 	}
 }
 
+func TestReadClosingCommandTag(t *testing.T) {
+	const source = "<GROUP>\n<ACTOR_OUT>0,LEFT,linear,500\n</GROUP>\n"
+
+	got, err := Read(writeScript(t, source))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Lines) != 3 {
+		t.Fatalf("expected 3 lines, got %d", len(got.Lines))
+	}
+	if got.Lines[2].Type != model.ScriptLineTypeCmd || got.Lines[2].Label != "/GROUP" || got.Lines[2].Content != "</GROUP>" {
+		t.Fatalf("unexpected closing tag line: %#v", got.Lines[2])
+	}
+}
+
 func TestReadMissingFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "missing.txt")
 

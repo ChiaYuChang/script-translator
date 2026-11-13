@@ -1,0 +1,90 @@
+version: '3'
+
+dotenv: ['.env']
+
+vars:
+  BIN: ./bin/translate
+  SCRIPT: e2e/data/e2e_scene.txt
+  SEED_DICT: e2e/data/seed_entities.json
+  DICT: e2e/entity/entity_dict.json
+  RECOGNIZED: e2e/recognize/recognized.json
+  TRANSLATED: e2e/translate/translated.txt
+  TRANSLATED_PIPE: e2e/translate/translated_pipe.txt
+
+tasks:
+  build:
+    desc: Build the translate CLI binary
+    cmds:
+      - mkdir -p bin
+      - go build -o {{.BIN}} ./cmd/translate
+
+  test:
+    desc: Run unit and fixture-backed E2E tests plus go vet
+    cmds:
+      - go test -count=1 ./...
+      - go vet ./...
+
+  e2e:
+    desc: Run E2E tests using recorded fixtures and local httptest server
+    cmds:
+      - go test -v -count=1 ./e2e
+
+  e2e:live:
+    desc: Run E2E tests against the real API configured in .env and e2e/*/config.json
+    cmds:
+      - go test -v -count=1 ./e2e -live
+
+  e2e:record:
+    desc: Call the real API and record raw JSON responses into e2e/fixtures/
+    cmds:
+      - go test -v -count=1 ./e2e -live -record
+
+  e2e:entity:reset:
+    desc: Reset e2e/entity/entity_dict.json from seed_entities.json
+    cmds:
+      - cp {{.SEED_DICT}} {{.DICT}}
+
+  e2e:entity:list:
+    desc: List entities in e2e/entity/entity_dict.json
+    deps: [build]
+    cmds:
+      - '{{.BIN}} entity list -d {{.DICT}}'
+
+  e2e:entity:insert:
+    desc: Insert recognized entities into e2e/entity/entity_dict.json
+    deps: [build]
+    cmds:
+      - '{{.BIN}} entity insert -d {{.DICT}} -i {{.RECOGNIZED}}'
+      - '{{.BIN}} entity list -d {{.DICT}}'
+
+  e2e:recognize:
+    desc: Run entity recognition stage against live API and save raw response + recognized.json
+    deps: [build]
+    cmds:
+      - '{{.BIN}} pipeline recognize -c e2e/recognize/config.json -i {{.SCRIPT}} -d {{.DICT}} -o {{.RECOGNIZED}} --save-raw e2e/recognize/raw'
+
+  e2e:translate:
+    desc: Run translation stage against live API from recognized.json and save raw responses
+    deps: [build]
+    cmds:
+      - '{{.BIN}} pipeline translate -c e2e/translate/config.json -e {{.RECOGNIZED}} -o {{.TRANSLATED}} --save-raw e2e/translate/raw'
+
+  e2e:pipe:
+    desc: Run full pipeline via Unix pipe against live API (recognize | translate)
+    deps: [build]
+    cmds:
+      - '{{.BIN}} pipeline recognize -c e2e/recognize/config.json -i {{.SCRIPT}} -d {{.DICT}} | {{.BIN}} pipeline translate -c e2e/translate/config.json -o {{.TRANSLATED_PIPE}}'
+
+  e2e:clean:
+    desc: Remove generated E2E artifacts, logs, metrics, and raw dumps
+    cmds:
+      - rm -rf e2e/recognize/raw e2e/translate/raw
+      - rm -f {{.RECOGNIZED}} e2e/recognize/*.jsonl
+      - rm -f {{.TRANSLATED}} {{.TRANSLATED_PIPE}} e2e/translate/*.jsonl
+      - rm -f {{.DICT}}
+
+  clean:
+    desc: Remove built binaries and generated E2E artifacts
+    deps: [e2e:clean]
+    cmds:
+      - rm -rf bin

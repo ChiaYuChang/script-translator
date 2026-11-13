@@ -30,6 +30,7 @@ func newPipelineRecognizeCmd(deps cliDeps) *cobra.Command {
 		inPath     string
 		dictPath   string
 		outPath    string
+		saveRawDir string
 	)
 
 	cmd := &cobra.Command{
@@ -41,7 +42,7 @@ func newPipelineRecognizeCmd(deps cliDeps) *cobra.Command {
 				return errors.New("missing input script path (--in)")
 			}
 
-			cfg, obs, provider, err := initObserverAndProvider(configPath, deps)
+			cfg, obs, provider, err := initObserverAndProvider(configPath, saveRawDir, "recognize", deps)
 			if err != nil {
 				return err
 			}
@@ -111,6 +112,7 @@ func newPipelineRecognizeCmd(deps cliDeps) *cobra.Command {
 	flags.StringVarP(&inPath, "in", "i", "", "Path to source script file")
 	flags.StringVarP(&dictPath, "dict", "d", "", "Optional path to entity_dict JSON file")
 	flags.StringVarP(&outPath, "out", "o", "-", "Output JSON path ('-' writes to stdout)")
+	flags.StringVar(&saveRawDir, "save-raw", "", "Optional directory to save raw Responses API JSON bodies as fixtures")
 	_ = cmd.MarkFlagRequired("in")
 	return cmd
 }
@@ -122,6 +124,7 @@ func newPipelineTranslateCmd(deps cliDeps) *cobra.Command {
 		dictPath     string
 		entitiesPath string
 		outPath      string
+		saveRawDir   string
 	)
 
 	cmd := &cobra.Command{
@@ -161,7 +164,7 @@ func newPipelineTranslateCmd(deps cliDeps) *cobra.Command {
 				return errors.New("missing input script path: specify --in or pipe output from pipeline recognize")
 			}
 
-			cfg, obs, provider, err := initObserverAndProvider(configPath, deps)
+			cfg, obs, provider, err := initObserverAndProvider(configPath, saveRawDir, "translate", deps)
 			if err != nil {
 				return err
 			}
@@ -213,6 +216,7 @@ func newPipelineTranslateCmd(deps cliDeps) *cobra.Command {
 	flags.StringVarP(&dictPath, "dict", "d", "", "Optional path to entity_dict JSON file when not reading recognize output")
 	flags.StringVarP(&entitiesPath, "entities", "e", "-", "Path to recognize output JSON ('-' reads stdin when piped)")
 	flags.StringVarP(&outPath, "out", "o", "-", "Output translated script path ('-' writes to stdout)")
+	flags.StringVar(&saveRawDir, "save-raw", "", "Optional directory to save raw Responses API JSON bodies as fixtures")
 	return cmd
 }
 
