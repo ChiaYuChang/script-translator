@@ -27,14 +27,11 @@ INPUT FORMAT
 
 The user message contains two or three labeled sections:
 
-1. "Entries:": A JSON array of known entity mappings.
+1. "Entries:": Existing entity mappings, formatted as:
+   - JapaneseCanonical: TraditionalChineseCanonical
+     - JapaneseAlias: TraditionalChineseAlias (optional indented sub-items for known aliases)
 
-   Each entity contains:
-   - "id": An optional database-assigned identifier. It is not part of the translation output.
-   - "canonical": An object with "from" (Japanese name) and "to" (required Traditional Chinese translation).
-   - "aliases": An array of alternative Japanese names and their required Traditional Chinese translations, using the same "from" and "to" structure.
-
-   Apply these mappings consistently whenever their Japanese names or aliases occur in the text. An empty array [] means no entity mappings apply.
+   Apply these mappings consistently whenever their Japanese names or aliases occur in the text. An empty "Entries:" section means no entity mappings apply.
 
 2. "History:" (optional, omitted for the first batch): Previously translated lines in "Speaker:Text" format ("OS" indicates narration).
 
@@ -77,28 +74,9 @@ Rules:
 EXAMPLE INPUT
 
 Entries:
-[
-  {
-    "id": 1,
-    "canonical": {
-      "from": "新堂ミナト",
-      "to": "新堂湊"
-    },
-    "aliases": [
-      {"from": "ミナト", "to": "湊"}
-    ]
-  },
-  {
-    "id": 2,
-    "canonical": {
-      "from": "朝倉ユイ",
-      "to": "朝倉由依"
-    },
-    "aliases": [
-      {"from": "ユイ", "to": "由依"}
-    ]
-  }
-]
+- 新堂ミナト: 新堂湊
+  - ミナト: 湊
+- 朝倉ユイ: 朝倉由依
 
 History:
 朝倉ユイ:早安！今天天氣真好。
@@ -199,10 +177,7 @@ func (p *Provider) Translate(
 		return nil, fmt.Errorf("translation: resolve schema: %w", err)
 	}
 
-	entity, err := json.Marshal(req.Entity)
-	if err != nil {
-		return nil, fmt.Errorf("translation: marshal entries: %w", err)
-	}
+	entriesSection := formatEntitiesSection(req.Entity)
 
 	speaker := make([]string, len(req.Dialogue))
 	for i := range speaker {
@@ -218,7 +193,7 @@ func (p *Provider) Translate(
 			return nil, fmt.Errorf("translation: batch %d: marshal input: %w", batchNum, err)
 		}
 
-		batchPrompt := formatTranslationQuery(entity, speaker, translated, batchInput)
+		batchPrompt := formatTranslationQuery(entriesSection, speaker, translated, batchInput)
 		var batchResult []model.TranslatedText
 		var lastErr error
 		for attempt := 0; attempt < param.MaxAttempt; attempt++ {
@@ -252,18 +227,27 @@ func (p *Provider) Translate(
 	return translated, nil
 }
 
+func formatEntitiesSection(entities []model.Entity) string {
+	var sb strings.Builder
+	sb.WriteString("Entries:\n")
+	for _, e := range entities {
+		sb.WriteString(e.String())
+		sb.WriteByte('\n')
+	}
+	return sb.String()
+}
+
 func formatTranslationQuery(
-	entriesJSON []byte,
+	entriesSection string,
 	speaker []string,
 	translated []model.TranslatedText,
 	inputJSON []byte,
 ) string {
 	var sb strings.Builder
-	sb.WriteString("Entries:\n")
-	sb.Write(entriesJSON)
+	sb.WriteString(entriesSection)
 
 	if len(translated) > 0 {
-		sb.WriteString("\n\nHistory:\n")
+		sb.WriteString("\nHistory:\n")
 		for i, t := range translated {
 			if i > 0 {
 				sb.WriteByte('\n')
@@ -271,9 +255,10 @@ func formatTranslationQuery(
 			// translated grows 1:1 with source in batch order.
 			sb.WriteString(t.Transcript(speaker[i]))
 		}
+		sb.WriteByte('\n')
 	}
 
-	sb.WriteString("\n\nInput:\n")
+	sb.WriteString("\nInput:\n")
 	sb.Write(inputJSON)
 	return sb.String()
 }

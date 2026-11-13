@@ -100,28 +100,21 @@ func mustMarshalJSON(t *testing.T, v any) string {
 	return string(b)
 }
 
-func parseEntriesSection(t *testing.T, prompt string) ([]model.Entity, any) {
+func extractEntriesSection(t *testing.T, prompt string) string {
 	t.Helper()
 	const prefix = "Entries:\n"
 	if !strings.HasPrefix(prompt, prefix) {
 		t.Fatalf("prompt missing Entries header:\n%s", prompt)
 	}
 	rest := prompt[len(prefix):]
+	if strings.HasPrefix(rest, "\n") {
+		return ""
+	}
 	end := strings.Index(rest, "\n\n")
 	if end < 0 {
 		t.Fatalf("prompt missing section separator after Entries:\n%s", prompt)
 	}
-	rawJSON := []byte(rest[:end])
-
-	var rawAny any
-	if err := json.Unmarshal(rawJSON, &rawAny); err != nil {
-		t.Fatalf("unmarshal Entries section as JSON: %v", err)
-	}
-	var entities []model.Entity
-	if err := json.Unmarshal(rawJSON, &entities); err != nil {
-		t.Fatalf("unmarshal Entries section into []model.Entity: %v", err)
-	}
-	return entities, rawAny
+	return rest[:end]
 }
 
 func parseInputSection(t *testing.T, prompt string) []model.TranslateUnit {
@@ -317,11 +310,12 @@ func TestTranslateMultiBatchHistoryAndEntries(t *testing.T) {
 		t.Fatalf("expected 3 batch requests, got %d", len(requests))
 	}
 
-	// All batches include the exact Entries glossary via JSON round-trip.
+	// All batches include the formatted Entries glossary.
+	wantEntries := req.Entity[0].String()
 	for i, r := range requests {
-		gotEntities, _ := parseEntriesSection(t, r.Input)
-		if !reflect.DeepEqual(gotEntities, req.Entity) {
-			t.Fatalf("request %d Entries mismatch:\ngot  %#v\nwant %#v", i+1, gotEntities, req.Entity)
+		gotEntries := extractEntriesSection(t, r.Input)
+		if gotEntries != wantEntries {
+			t.Fatalf("request %d Entries mismatch:\ngot:\n%s\nwant:\n%s", i+1, gotEntries, wantEntries)
 		}
 	}
 
@@ -384,10 +378,8 @@ func TestTranslateNoHistoryPollutionAcrossCalls(t *testing.T) {
 	if strings.Contains(requests[1].Input, "History:") {
 		t.Fatalf("second Translate call polluted with previous history:\n%s", requests[1].Input)
 	}
-	gotEntities, rawEntries := parseEntriesSection(t, requests[1].Input)
-	arr, ok := rawEntries.([]any)
-	if !ok || arr == nil || len(arr) != 0 || len(gotEntities) != 0 {
-		t.Fatalf("expected non-null empty Entries JSON array [], got %#v", rawEntries)
+	if gotEntries := extractEntriesSection(t, requests[1].Input); gotEntries != "" {
+		t.Fatalf("expected empty Entries section, got %q", gotEntries)
 	}
 }
 
