@@ -162,7 +162,11 @@ func TestRecognizeEntitiesUsesPassedModel(t *testing.T) {
 		},
 	}.Transcript()
 	dictionary := []model.Entity{
-		{ID: 1, Canonical: model.NamePair{From: "新堂ミナト", To: "新堂湊"}},
+		{
+			ID:        1,
+			Canonical: model.NamePair{From: "新堂ミナト", To: "新堂湊"},
+			Aliases:   []model.NamePair{{From: "ミナト", To: "湊"}},
+		},
 	}
 
 	if _, err := p.RecognizeEntities(context.Background(), transcript, RecognizeEntitiesParams{
@@ -198,8 +202,24 @@ func TestRecognizeEntitiesUsesPassedModel(t *testing.T) {
 	if captured.Model != "entity-model-v1" {
 		t.Fatalf("expected model entity-model-v1, got %q", captured.Model)
 	}
+	wantInput := "KnownEntities:\n- 新堂ミナト: 新堂湊\n  - ミナト: 湊\n\nTranscript:\n新堂ミナト:秋葉原へ行こう。"
+	if captured.Input != wantInput {
+		t.Fatalf("unexpected request input:\ngot:\n%s\nwant:\n%s", captured.Input, wantInput)
+	}
 	if len(got) != 2 || got[0].Canonical.To != "新堂湊" || got[1].Canonical.To != "秋葉原" {
 		t.Fatalf("unexpected recognized entities: %#v", got)
+	}
+
+	// Empty KnownEntities section still renders cleanly before Transcript:.
+	if _, err := p.RecognizeEntities(context.Background(), transcript, RecognizeEntitiesParams{
+		Model:      "entity-model-v1",
+		MaxAttempt: 1,
+	}); err != nil {
+		t.Fatalf("RecognizeEntities without dictionary failed: %v", err)
+	}
+	wantEmptyKnownInput := "KnownEntities:\n\nTranscript:\n新堂ミナト:秋葉原へ行こう。"
+	if captured.Input != wantEmptyKnownInput {
+		t.Fatalf("unexpected empty KnownEntities input:\ngot:\n%s\nwant:\n%s", captured.Input, wantEmptyKnownInput)
 	}
 }
 

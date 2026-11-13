@@ -43,3 +43,21 @@ func TestTranslateRequestTranscript(t *testing.T) {
 		t.Fatalf("got %q, want %q", got, want)
 	}
 }
+
+func TestEntityString(t *testing.T) {
+	withAlias := Entity{
+		ID:        1,
+		Canonical: NamePair{From: "新堂ミナト", To: "新堂湊"},
+		Aliases:   []NamePair{{From: "ミナト", To: "湊"}},
+	}
+	if got, want := withAlias.String(), "- 新堂ミナト: 新堂湊\n  - ミナト: 湊"; got != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
+	}
+
+	withoutAlias := Entity{
+		Canonical: NamePair{From: "朝倉ユイ", To: "朝倉由依"},
+	}
+	if got, want := withoutAlias.String(), "- 朝倉ユイ: 朝倉由依"; got != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
+	}
+}
