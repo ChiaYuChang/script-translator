@@ -10,9 +10,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
@@ -953,5 +955,260 @@ func TestProviderRecordsMetricsAndLogsAcrossRetries(t *testing.T) {
 		if i > 0 && (entry["batch"] != float64(1) || entry["total_batch"] != float64(1)) {
 			t.Fatalf("expected batch=1 and total_batch=1 on translation log line %d, got: %#v", i, entry)
 		}
+	}
+}
+
+func writeBatchResponse(t *testing.T, w http.ResponseWriter, items []model.TranslatedText) {
+	t.Helper()
+	out := mustMarshalJSON(t, translationOutput{
+		Dialogue: model.TranslateBatchOutput(items),
+	})
+	writeJSONResponse(t, w, "completed", map[string]any{
+		"type": "output_text",
+		"text": out,
+	})
+}
+
+func TestTranslateWaitTimeAnd429ExponentialBackoff(t *testing.T) {
+	var calls atomic.Int32
+	var slept []time.Duration
+
+	recResp, err := json.Marshal(recognitionOutput{
+		Entity: []recognizedEntity{
+			{Canonical: model.NamePair{From: "ミナト", To: "湊"}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	p := newTestProvider(
+		t,
+		func(w http.ResponseWriter, _ *http.Request) {
+			n := calls.Add(1)
+			switch n {
+			case 1:
+				// RecognizeEntities call: first LLM call, no pre-wait.
+				writeJSONResponse(t, w, "completed", map[string]any{
+					"type": "output_text",
+					"text": string(recResp),
+				})
+			case 2, 3:
+				// Batch 1 attempts 1 & 2 -> HTTP 429 triggers exponential backoff (3s, 6s).
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusTooManyRequests)
+				_, _ = w.Write([]byte(`{"error":{"message":"rate limit","type":"rate_limit_error"}}`))
+			case 4:
+				// Batch 1 attempt 3 -> invalid schema triggers WaitTime (1s).
+				writeJSONResponse(t, w, "completed", map[string]any{
+					"type": "output_text",
+					"text": `{"dialogue":[]}`,
+				})
+			case 5:
+				// Batch 1 attempt 4 -> succeeds.
+				writeBatchResponse(t, w, []model.TranslatedText{{Index: 0, Text: "「早安」"}})
+			default:
+				// Batch 2 attempt 1 -> after WaitTime (1s), succeeds.
+				writeBatchResponse(t, w, []model.TranslatedText{{Index: 1, Text: "「晚安」"}})
+			}
+		},
+		WithWaitTime(1*time.Second),
+		WithRetryTime(3*time.Second),
+		withSleep(func(_ context.Context, d time.Duration) error {
+			slept = append(slept, d)
+			return nil
+		}),
+	)
+
+	dialogue := []model.TranslateUnit{
+		{Index: 0, Speaker: "ミナト", Text: "「おはよう」"},
+		{Index: 1, Speaker: "ミナト", Text: "「おやすみ」"},
+	}
+	if _, err := p.RecognizeEntities(context.Background(), model.TranslateRequest{Dialogue: dialogue}.Transcript(), RecognizeEntitiesParams{
+		Model:      "entity-model-v1",
+		MaxAttempt: 2,
+	}); err != nil {
+		t.Fatalf("RecognizeEntities failed: %v", err)
+	}
+
+	got, err := p.Translate(context.Background(), model.TranslateRequest{Dialogue: dialogue}, TranslateParams{
+		Model:      "translate-model-v1",
+		BatchSize:  1,
+		MaxAttempt: 4,
+	})
+	if err != nil {
+		t.Fatalf("Translate failed: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 translated units, got %d", len(got))
+	}
+
+	wantSlept := []time.Duration{
+		1 * time.Second, // WaitTime before Batch 1 (follows RecognizeEntities)
+		3 * time.Second, // 429 retry #1: 3s * 1<<0
+		6 * time.Second, // 429 retry #2: 3s * 1<<1
+		1 * time.Second, // non-429 retry: WaitTime
+		1 * time.Second, // WaitTime before Batch 2
+	}
+	if !reflect.DeepEqual(slept, wantSlept) {
+		t.Fatalf("recorded sleeps = %v, want %v", slept, wantSlept)
+	}
+}
+
+func TestTranslate5xxExponentialBackoffAndZeroNoWait(t *testing.T) {
+	var calls atomic.Int32
+	var slept []time.Duration
+
+	p := newTestProvider(
+		t,
+		func(w http.ResponseWriter, _ *http.Request) {
+			switch calls.Add(1) {
+			case 1, 2:
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = w.Write([]byte(`{"error":{"message":"upstream busy","type":"server_error"}}`))
+			default:
+				writeBatchResponse(t, w, []model.TranslatedText{{Index: 0, Text: "「早安」"}})
+			}
+		},
+		WithWaitTime(0),
+		WithRetryTime(4*time.Second),
+		withSleep(func(_ context.Context, d time.Duration) error {
+			slept = append(slept, d)
+			return nil
+		}),
+	)
+
+	got, err := p.Translate(context.Background(), model.TranslateRequest{
+		Dialogue: []model.TranslateUnit{{Index: 0, Text: "「おはよう」"}},
+	}, TranslateParams{
+		Model:      "translate-model-v1",
+		BatchSize:  1,
+		MaxAttempt: 3,
+	})
+	if err != nil {
+		t.Fatalf("Translate failed: %v", err)
+	}
+	if len(got) != 1 || got[0].Text != "「早安」" {
+		t.Fatalf("unexpected translation: %#v", got)
+	}
+
+	wantSlept := []time.Duration{4 * time.Second, 8 * time.Second}
+	if !reflect.DeepEqual(slept, wantSlept) {
+		t.Fatalf("recorded sleeps = %v, want %v", slept, wantSlept)
+	}
+
+	// RetryTime == 0 disables backoff sleep even on 429/5xx.
+	var zeroSlept []time.Duration
+	var zeroCalls atomic.Int32
+	pZero := newTestProvider(
+		t,
+		func(w http.ResponseWriter, _ *http.Request) {
+			if zeroCalls.Add(1) == 1 {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusTooManyRequests)
+				_, _ = w.Write([]byte(`{"error":{"message":"rate limit","type":"rate_limit_error"}}`))
+				return
+			}
+			writeBatchResponse(t, w, []model.TranslatedText{{Index: 0, Text: "「早安」"}})
+		},
+		WithWaitTime(0),
+		WithRetryTime(0),
+		withSleep(func(_ context.Context, d time.Duration) error {
+			zeroSlept = append(zeroSlept, d)
+			return nil
+		}),
+	)
+	if _, err := pZero.Translate(context.Background(), model.TranslateRequest{
+		Dialogue: []model.TranslateUnit{{Index: 0, Text: "「おはよう」"}},
+	}, TranslateParams{
+		Model:      "translate-model-v1",
+		BatchSize:  1,
+		MaxAttempt: 2,
+	}); err != nil {
+		t.Fatalf("Translate with zero timers failed: %v", err)
+	}
+	if len(zeroSlept) != 0 {
+		t.Fatalf("expected zero sleeps when WaitTime=0 and RetryTime=0, got %v", zeroSlept)
+	}
+}
+
+func TestTranslateResumeFromAndPartialCheckpoint(t *testing.T) {
+	var seenInputs []string
+	var snapshots [][]model.TranslatedText
+
+	p := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var captured capturedResponseRequest
+		if err := json.Unmarshal(raw, &captured); err != nil {
+			t.Fatal(err)
+		}
+		seenInputs = append(seenInputs, captured.Input)
+
+		switch len(seenInputs) {
+		case 1:
+			writeBatchResponse(t, w, []model.TranslatedText{{Index: 2, Text: "（第三句）"}})
+		case 2:
+			writeBatchResponse(t, w, []model.TranslatedText{{Index: 3, Text: "第四句。"}})
+		default:
+			t.Fatalf("unexpected extra request #%d", len(seenInputs))
+		}
+	})
+
+	req := model.TranslateRequest{
+		Entity: []model.Entity{{Canonical: model.NamePair{From: "ミナト", To: "湊"}}},
+		Dialogue: []model.TranslateUnit{
+			{Index: 0, Speaker: "ミナト", Text: "「一」"},
+			{Index: 1, Speaker: "ミナト", Text: "「二」"},
+			{Index: 2, Speaker: "ミナト", Text: "（三）"},
+			{Index: 3, Text: "四。"},
+		},
+	}
+
+	got, err := p.Translate(context.Background(), req, TranslateParams{
+		Model:      "translate-model-v1",
+		BatchSize:  1,
+		MaxAttempt: 2,
+		ResumeFrom: []model.TranslatedText{
+			{Index: 0, Text: "「第一句」"},
+			{Index: 1, Text: "「第二句」"},
+		},
+		OnBatchComplete: func(completed []model.TranslatedText) error {
+			snapshots = append(snapshots, slices.Clone(completed))
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("Translate resume failed: %v", err)
+	}
+
+	if len(seenInputs) != 2 {
+		t.Fatalf("expected 2 requests for remaining units, got %d", len(seenInputs))
+	}
+	// First remaining batch should already include History with resumed units 0 and 1.
+	if !strings.Contains(seenInputs[0], "ミナト:「第一句」") || !strings.Contains(seenInputs[0], "ミナト:「第二句」") {
+		t.Fatalf("expected resumed history in first batch prompt, got:\n%s", seenInputs[0])
+	}
+	if len(snapshots) != 2 || len(snapshots[0]) != 3 || len(snapshots[1]) != 4 {
+		t.Fatalf("unexpected checkpoint snapshots: %#v", snapshots)
+	}
+	want := model.TranslateResponse{
+		{Index: 0, Text: "「第一句」"},
+		{Index: 1, Text: "「第二句」"},
+		{Index: 2, Text: "（第三句）"},
+		{Index: 3, Text: "第四句。"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("translated mismatch:\ngot  %#v\nwant %#v", got, want)
+	}
+
+	// Invalid ResumeFrom index mismatch returns error without calling API.
+	if _, err := p.Translate(context.Background(), req, TranslateParams{
+		Model:      "translate-model-v1",
+		BatchSize:  1,
+		MaxAttempt: 1,
+		ResumeFrom: []model.TranslatedText{{Index: 9, Text: "「壞掉」"}},
+	}); err == nil {
+		t.Fatal("expected error for mismatched ResumeFrom index")
 	}
 }

@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
@@ -442,6 +444,7 @@ func newScriptRunCmd(deps cliDeps) *cobra.Command {
 			extractedCachePath := filepath.Join(hashCacheDir, "extracted.json")
 			recognizedCachePath := filepath.Join(hashCacheDir, "recognized.json")
 			translatedCachePath := filepath.Join(hashCacheDir, "translated.json")
+			partialCachePath := filepath.Join(hashCacheDir, "translated.partial.json")
 
 			if noCache || !fileExists(extractedCachePath) {
 				if err := writeJSONAtomic(extractedCachePath, extracted); err != nil {
@@ -456,7 +459,7 @@ func newScriptRunCmd(deps cliDeps) *cobra.Command {
 				recognizedCached  bool
 			)
 			if !noCache {
-				translated, translatedCached = tryLoadCachedTranslated(translatedCachePath, extracted.Hashsum)
+				translated, translatedCached = tryLoadCachedTranslated(translatedCachePath, extracted.Hashsum, len(extracted.Dialogue))
 				recognizedPayload, recognizedCached = tryLoadCachedRecognized(recognizedCachePath, extracted.Hashsum)
 			}
 
@@ -515,19 +518,55 @@ func newScriptRunCmd(deps cliDeps) *cobra.Command {
 				}
 
 				effectiveEntities = mergeEntitiesReadOnly(dictMapping, recognizedPayload.Entities)
+				entitiesHash := entitiesFingerprint(effectiveEntities)
 
+				var resumeFrom []model.TranslatedText
+				if noCache {
+					if err := removeFileIfExists(partialCachePath); err != nil {
+						return fmt.Errorf("remove stale partial translation cache: %w", err)
+					}
+				} else {
+					var ignoreReason string
+					resumeFrom, ignoreReason = tryLoadPartialTranslated(partialCachePath, extracted.Hashsum, entitiesHash, extracted.Dialogue)
+					if ignoreReason != "" {
+						obs.Logger.WarnContext(cmd.Context(), "ignoring partial translation checkpoint",
+							slog.String("path", partialCachePath),
+							slog.String("reason", ignoreReason),
+						)
+					} else if len(resumeFrom) > 0 {
+						obs.Logger.InfoContext(cmd.Context(), "resuming translation from partial checkpoint",
+							slog.String("path", partialCachePath),
+							slog.Int("completed_units", len(resumeFrom)),
+							slog.Int("remaining_units", len(extracted.Dialogue)-len(resumeFrom)),
+						)
+					}
+				}
+
+				remainingUnits := len(extracted.Dialogue) - len(resumeFrom)
 				obs.Logger.InfoContext(cmd.Context(), "starting translation",
 					slog.String("input", resolvedIn),
 					slog.String("hashsum", extracted.Hashsum),
 					slog.Int("dialogue_units", len(extracted.Dialogue)),
-					slog.Int("total_batch", llm.TotalBatches(len(extracted.Dialogue), cfg.Translation.BatchSize)),
+					slog.Int("completed_units", len(resumeFrom)),
+					slog.Int("remaining_units", remainingUnits),
+					slog.Int("total_batch", llm.TotalBatches(remainingUnits, cfg.Translation.BatchSize)),
 					slog.Int("entities", len(effectiveEntities)),
 				)
+
+				translateParams := cfg.Translation
+				translateParams.ResumeFrom = resumeFrom
+				translateParams.OnBatchComplete = func(completed []model.TranslatedText) error {
+					return writeJSONAtomic(partialCachePath, partialTranslatedCheckpoint{
+						Hashsum:      extracted.Hashsum,
+						EntitiesHash: entitiesHash,
+						Dialogue:     completed,
+					})
+				}
 
 				resp, err := provider.Translate(cmd.Context(), model.TranslateRequest{
 					Entity:   effectiveEntities,
 					Dialogue: extracted.Dialogue,
-				}, cfg.Translation)
+				}, translateParams)
 				if err != nil {
 					return err
 				}
@@ -538,6 +577,9 @@ func newScriptRunCmd(deps cliDeps) *cobra.Command {
 				}
 				if err := writeJSONAtomic(translatedCachePath, translated); err != nil {
 					return fmt.Errorf("write translated cache: %w", err)
+				}
+				if err := removeFileIfExists(partialCachePath); err != nil {
+					return fmt.Errorf("remove partial translation cache: %w", err)
 				}
 				obs.Logger.InfoContext(cmd.Context(), "translation completed",
 					slog.String("input", resolvedIn),
@@ -727,16 +769,73 @@ func decodeTranslatedScript(data []byte) (model.TranslatedScript, error) {
 	return payload, nil
 }
 
-func tryLoadCachedTranslated(path, wantHash string) (model.TranslatedScript, bool) {
+type partialTranslatedCheckpoint struct {
+	Hashsum      string                 `json:"hashsum"`
+	EntitiesHash string                 `json:"entities_hash"`
+	Dialogue     []model.TranslatedText `json:"dialogue"`
+}
+
+func entitiesFingerprint(entities []model.Entity) string {
+	raw, err := json.Marshal(entities)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
+}
+
+func tryLoadCachedTranslated(path, wantHash string, wantUnits int) (model.TranslatedScript, bool) {
 	raw, err := os.ReadFile(path) // #nosec G304 -- cache file path is constructed from validated hashsum
 	if err != nil {
 		return model.TranslatedScript{}, false
 	}
 	payload, err := decodeTranslatedScript(raw)
-	if err != nil || payload.Hashsum != wantHash {
+	if err != nil || payload.Hashsum != wantHash || len(payload.Dialogue) != wantUnits {
 		return model.TranslatedScript{}, false
 	}
 	return payload, true
+}
+
+func tryLoadPartialTranslated(
+	path, wantHash, wantEntitiesHash string,
+	dialogue []model.TranslateUnit,
+) ([]model.TranslatedText, string) {
+	raw, err := os.ReadFile(path) // #nosec G304 -- cache file path is constructed from validated hashsum
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, ""
+		}
+		return nil, "read error"
+	}
+	var payload partialTranslatedCheckpoint
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return nil, "invalid json"
+	}
+	if payload.Hashsum != wantHash {
+		return nil, "hashsum mismatch"
+	}
+	if payload.EntitiesHash != wantEntitiesHash {
+		return nil, "entities changed"
+	}
+	if len(payload.Dialogue) == 0 {
+		return nil, "empty checkpoint"
+	}
+	if len(payload.Dialogue) > len(dialogue) {
+		return nil, "dialogue count exceeded"
+	}
+	for i, unit := range payload.Dialogue {
+		if unit.Index != dialogue[i].Index || strings.TrimSpace(unit.Text) == "" {
+			return nil, "dialogue index or text mismatch"
+		}
+	}
+	return payload.Dialogue, ""
+}
+
+func removeFileIfExists(path string) error {
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 func tryLoadCachedRecognized(path, wantHash string) (recognizePayload, bool) {

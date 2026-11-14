@@ -30,6 +30,8 @@ type defaultReport struct {
 	APIKeyEnv  string `json:"APIKEY_ENV"`
 	BatchSize  int    `json:"BATCH_SIZE"`
 	MaxAttempt int    `json:"MAX_ATTEMPT"`
+	WaitTime   int    `json:"WAIT_TIME"`
+	RetryTime  int    `json:"RETRY_TIME"`
 	LogLevel   string `json:"LOG_LEVEL"`
 }
 
@@ -82,6 +84,8 @@ func newDefaultAllCmd(deps cliDeps) *cobra.Command {
 					APIKeyEnv:  config.DefaultAPIKeyEnv,
 					BatchSize:  config.DefaultBatchSize,
 					MaxAttempt: config.DefaultMaxAttempt,
+					WaitTime:   config.DefaultWaitTime,
+					RetryTime:  config.DefaultRetryTime,
 					LogLevel:   observation.DefaultLogLevel,
 				}
 				data, err := marshalIndentedLine(report)
@@ -214,6 +218,8 @@ func resolveDefaultEntries(deps cliDeps) ([]defaultEntry, error) {
 		{Key: "APIKEY_ENV", Value: config.DefaultAPIKeyEnv},
 		{Key: "BATCH_SIZE", Value: strconv.Itoa(config.DefaultBatchSize)},
 		{Key: "MAX_ATTEMPT", Value: strconv.Itoa(config.DefaultMaxAttempt)},
+		{Key: "WAIT_TIME", Value: strconv.Itoa(config.DefaultWaitTime)},
+		{Key: "RETRY_TIME", Value: strconv.Itoa(config.DefaultRetryTime)},
 		{Key: "LOG_LEVEL", Value: observation.DefaultLogLevel},
 	}, nil
 }

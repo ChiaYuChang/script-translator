@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"go-script-translate/internal/config"
@@ -842,6 +843,10 @@ func TestCLI_DefaultAllAndWhich(t *testing.T) {
 		"20",
 		"MAX_ATTEMPT",
 		"3",
+		"WAIT_TIME",
+		"0",
+		"RETRY_TIME",
+		"0",
 		"LOG_LEVEL",
 		"info",
 	} {
@@ -1001,5 +1006,193 @@ func TestCLI_DefaultInit(t *testing.T) {
 	}
 	if _, err := config.Load(wantCfgPath); err != nil {
 		t.Fatalf("config.Load after --force failed: %v", err)
+	}
+}
+
+func TestCLIScriptRunResumeFromPartialOn429WithChangedBatchSize(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := writeTestScript(t, dir) // 3 dialogue units (indices 0, 1, 2)
+	cacheDir := filepath.Join(dir, "cache")
+
+	var reqCount atomic.Int32
+	writeMockOK := func(w http.ResponseWriter, outputText string) {
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.MarshalWrite(w, map[string]any{
+			"id":     "resp_resume_test",
+			"object": "response",
+			"status": "completed",
+			"output": []map[string]any{{
+				"id":     "msg_resume_test",
+				"type":   "message",
+				"status": "completed",
+				"role":   "assistant",
+				"content": []map[string]any{{
+					"type": "output_text",
+					"text": outputText,
+				}},
+			}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var req map[string]any
+		if err := json.Unmarshal(raw, &req); err != nil {
+			t.Fatal(err)
+		}
+		reqNum := reqCount.Add(1)
+		modelName, _ := req["model"].(string)
+
+		switch modelName {
+		case "gpt-entity":
+			b, err := json.Marshal(map[string]any{
+				"entity": []map[string]any{
+					{"canonical": map[string]string{"from": "新堂ミナト", "to": "新堂湊"}, "aliases": []any{}},
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeMockOK(w, string(b))
+		case "gpt-translate":
+			prompt, _ := req["input"].(string)
+			_, inputJSON, ok := strings.Cut(prompt, "\nInput:\n")
+			if !ok {
+				t.Fatalf("translation prompt missing Input section:\n%s", prompt)
+			}
+			var units []model.TranslateUnit
+			if err := json.Unmarshal([]byte(inputJSON), &units); err != nil {
+				t.Fatalf("unmarshal translation input units: %v\ninput:\n%s", err, inputJSON)
+			}
+			switch {
+			case len(units) == 2 && units[0].Index == 0 && units[1].Index == 1:
+				// Run 1 batch 1 (batch_size=2): translate units 0 and 1.
+				b, err := json.Marshal(map[string]any{
+					"dialogue": []map[string]any{
+						{"index": 0, "text": "「去秋葉原吧」"},
+						{"index": 1, "text": "（我應該有帶錢包吧……）"},
+					},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				writeMockOK(w, string(b))
+			case reqNum == 3:
+				// Run 1 batch 2 (unit 2) returns HTTP 429 so run 1 fails after persisting partial checkpoint.
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusTooManyRequests)
+				_, _ = w.Write([]byte(`{"error":{"message":"rate limit","type":"rate_limit_error"}}`))
+			default:
+				// Run 2 (batch_size=1) resumes directly at unit 2 with History containing units 0 & 1.
+				if !strings.Contains(prompt, "新堂ミナト:「去秋葉原吧」") || !strings.Contains(prompt, "新堂ミナト:（我應該有帶錢包吧……）") {
+					t.Fatalf("expected resumed request to include completed History units, got:\n%s", prompt)
+				}
+				if len(units) != 1 || units[0].Index != 2 {
+					t.Fatalf("expected resumed run with batch_size=1 to request only unit 2, got: %#v", units)
+				}
+				b, err := json.Marshal(map[string]any{
+					"dialogue": []map[string]any{
+						{"index": 2, "text": "傍晚的教室。"},
+					},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				writeMockOK(w, string(b))
+			}
+		default:
+			t.Fatalf("unexpected model name %q", modelName)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	writeCfg := func(batchSize int) string {
+		p := filepath.Join(dir, "config.json")
+		raw := mustMarshalJSONForTest(t, map[string]any{
+			"cache_dir": cacheDir,
+			"provider": map[string]any{
+				"base_url":   srv.URL + "/v1",
+				"api_key":    "test-key",
+				"wait_time":  0,
+				"retry_time": 0,
+			},
+			"entity_recognition": map[string]any{"model": "gpt-entity", "max_attempt": 1},
+			"translation":        map[string]any{"model": "gpt-translate", "batch_size": batchSize, "max_attempt": 1},
+			"observation": map[string]any{
+				"log": map[string]any{"level": "info", "console": map[string]any{"enable": false}},
+			},
+		})
+		if err := os.WriteFile(p, raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+
+	// Run 1 (batch_size=2): recognize succeeds, batch 1 succeeds (units 0..1), batch 2 fails with 429.
+	cfgPath := writeCfg(2)
+	outPath := filepath.Join(dir, "out.txt")
+	cmd1 := newRootCmd(cliDeps{
+		stdin:      &bytes.Buffer{},
+		stdout:     &bytes.Buffer{},
+		stderr:     &bytes.Buffer{},
+		stdinIsTTY: func() bool { return true },
+	})
+	cmd1.SetArgs([]string{"script", "run", scriptPath, "-c", cfgPath, "-o", outPath})
+	err := cmd1.Execute()
+	if err == nil || !strings.Contains(err.Error(), "429") {
+		t.Fatalf("expected run 1 to fail on batch 2 HTTP 429, got: %v", err)
+	}
+
+	// Find hashsum cache directory and verify translated.partial.json exists while translated.json does not.
+	entries, err := os.ReadDir(cacheDir)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("expected 1 hash cache dir under %s, got %#v (err=%v)", cacheDir, entries, err)
+	}
+	hashDir := filepath.Join(cacheDir, entries[0].Name())
+	partialPath := filepath.Join(hashDir, "translated.partial.json")
+	translatedPath := filepath.Join(hashDir, "translated.json")
+	if _, err := os.Stat(partialPath); err != nil {
+		t.Fatalf("expected %s to exist after failed run 1: %v", partialPath, err)
+	}
+	if _, err := os.Stat(translatedPath); !os.IsNotExist(err) {
+		t.Fatalf("did not expect full %s before completion (err=%v)", translatedPath, err)
+	}
+
+	// Run 2 changes batch_size from 2 -> 1 and succeeds with only 1 additional LLM request (unit 2).
+	cfgPath = writeCfg(1)
+	cmd2 := newRootCmd(cliDeps{
+		stdin:      &bytes.Buffer{},
+		stdout:     &bytes.Buffer{},
+		stderr:     &bytes.Buffer{},
+		stdinIsTTY: func() bool { return true },
+	})
+	cmd2.SetArgs([]string{"script", "run", scriptPath, "-c", cfgPath, "-o", outPath})
+	if err := cmd2.Execute(); err != nil {
+		t.Fatalf("resumed run 2 failed: %v", err)
+	}
+
+	if reqCount.Load() != 4 {
+		t.Fatalf("expected total 4 HTTP calls (run1: rec+b1+429, run2: unit2), got %d", reqCount.Load())
+	}
+	if _, err := os.Stat(partialPath); !os.IsNotExist(err) {
+		t.Fatalf("expected partial checkpoint %s to be removed after completion", partialPath)
+	}
+	if _, err := os.Stat(translatedPath); err != nil {
+		t.Fatalf("expected full cache %s after completion: %v", translatedPath, err)
+	}
+
+	finalOut, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"<NAME_PLATE>新堂湊", "「去秋葉原吧」", "（我應該有帶錢包吧……）", "傍晚的教室。"} {
+		if !strings.Contains(string(finalOut), want) {
+			t.Fatalf("missing %q in assembled output:\n%s", want, string(finalOut))
+		}
 	}
 }

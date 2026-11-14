@@ -169,31 +169,7 @@ func TestEndToEndPipeline(t *testing.T) {
 		t.Fatal(err)
 	}
 	translatedText := string(translatedBytes)
-	for _, wantSnippet := range []string{
-		"<BGM_PLAY>bgm_evening_walk,1000",
-		"<SE_PLAY>se_train_door",
-		"<WAIT>300",
-		"<VOICE_PLAY>vo_minato_001",
-		"<ACTOR_FRONT>1",
-		"<EFFECT_FLASH>WHITE,200",
-		"<SPINE>sp_ren_idle,CENTER",
-		"<SPINE_ANIMATOR>wave",
-		"<EFFECT_QUAKE>SMALL,300",
-		"<EV>ev_old_script,IN,600",
-		"<EV_OUT>400",
-		"<GROUP>",
-		"</GROUP>",
-		"<NAME_PLATE>新堂湊",
-		"<NAME_PLATE>朝倉由依",
-		"<SCENARIO_END>",
-	} {
-		if !strings.Contains(translatedText, wantSnippet) {
-			t.Fatalf("translated script missing %q:\n%s", wantSnippet, translatedText)
-		}
-	}
-	if !strings.Contains(translatedText, "「") || !strings.Contains(translatedText, "（") || !strings.Contains(translatedText, "）") {
-		t.Fatalf("translated script should preserve both spoken 「」 and monologue （） wrappers:\n%s", translatedText)
-	}
+	assertVer1ScriptOutput(t, translatedText)
 
 	// 3. Entity insert & list verification.
 	runCLI(t, binPath, repoRoot, extraEnv, nil,
@@ -273,6 +249,260 @@ func TestEndToEndPipeline(t *testing.T) {
 	}
 	assertVer2ScriptOutput(t, string(run2Bytes))
 	assertZeroAPIRequestsMetrics(t, filepath.Join(workDir, "run2_metrics.jsonl"))
+}
+
+func TestEndToEndRateLimit429RetryAndResume(t *testing.T) {
+	if *liveAPI {
+		t.Skip("synthetic 429 injection only runs in fixture mode")
+	}
+
+	e2eDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	repoRoot, err := filepath.Abs(filepath.Join(e2eDir, ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	binPath := filepath.Join(t.TempDir(), "script-translator")
+	buildCmd := exec.Command("go", "build", "-o", binPath, "./cmd/script-translator")
+	buildCmd.Dir = repoRoot
+	if out, err := buildCmd.CombinedOutput(); err != nil {
+		t.Fatalf("build CLI binary: %v\n%s", err, string(out))
+	}
+
+	fixturesDir := filepath.Join(e2eDir, "fixtures")
+	recFixtures := loadFixtureFiles(t, filepath.Join(fixturesDir, "recognize_*.json"))
+	trFixtures := loadFixtureFiles(t, filepath.Join(fixturesDir, "translate_*.json"))
+	if len(recFixtures) == 0 || len(trFixtures) < 4 {
+		t.Skipf("expected >=1 recognize and >=4 translate fixtures in %s", fixturesDir)
+	}
+
+	// Stateful 429 fault-injection server backed by recorded real API fixtures:
+	//   Call 1: recognize_001
+	//   Call 2: batch 1 (translate_001)
+	//   Call 3: batch 2 (translate_002)
+	//   Call 4: batch 3 attempt 1 -> HTTP 429
+	//   Call 5: batch 3 attempt 2 -> HTTP 429 (Run 1 fails cleanly with partial checkpoint saved)
+	//   --- Run 2 resumes from translated.partial.json at batch 3 (0 recognize calls) ---
+	//   Call 6: batch 3 attempt 1 -> HTTP 429 (auto-retried after 1s RetryTime backoff)
+	//   Call 7: batch 3 attempt 2 -> translate_003
+	//   Call 8: batch 4 attempt 1 -> translate_004
+	var mu sync.Mutex
+	var callNum int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/responses" {
+			http.Error(w, "unexpected path", http.StatusNotFound)
+			return
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read request body: %v", err)
+		}
+		var req struct {
+			Input string `json:"input"`
+			Text  struct {
+				Format struct {
+					Name string `json:"name"`
+				} `json:"format"`
+			} `json:"text"`
+		}
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Errorf("unmarshal request body: %v", err)
+			http.Error(w, "bad json", http.StatusBadRequest)
+			return
+		}
+
+		mu.Lock()
+		callNum++
+		n := callNum
+		mu.Unlock()
+
+		switch n {
+		case 1:
+			if req.Text.Format.Name != "entity_recognition" {
+				t.Errorf("call 1 expected entity_recognition, got %q", req.Text.Format.Name)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(recFixtures[0])
+		case 2:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(trFixtures[0])
+		case 3:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(trFixtures[1])
+		case 4, 5:
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error":{"message":"rate limit hit","type":"rate_limit_error"}}`))
+		case 6:
+			if req.Text.Format.Name != "script_translation" || !strings.Contains(req.Input, "\nHistory:\n") {
+				t.Errorf("call 6 expected resumed script_translation with History, got schema=%q", req.Text.Format.Name)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error":{"message":"transient rate limit","type":"rate_limit_error"}}`))
+		case 7:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(trFixtures[2])
+		case 8:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(trFixtures[3])
+		default:
+			t.Errorf("unexpected extra HTTP call #%d (%s)", n, req.Text.Format.Name)
+			http.Error(w, "too many calls", http.StatusInternalServerError)
+		}
+	}))
+	defer srv.Close()
+
+	workDir := t.TempDir()
+	scriptVer1Path := filepath.Join(e2eDir, "data", "e2e_scene_ver1.txt")
+	dictPath := filepath.Join(workDir, "entity_dict.json")
+	copyFile(t, filepath.Join(e2eDir, "data", "seed_entities.json"), dictPath)
+	cacheDir := filepath.Join(workDir, "cache")
+
+	hash := strings.TrimSpace(runCLI(t, binPath, repoRoot, nil, nil, "script", "hashsum", scriptVer1Path))
+	outPath := filepath.Join(workDir, "translated_429_resume.txt")
+
+	write429Cfg := func(prefix string, maxAttempt int) string {
+		cfg, err := config.Load(filepath.Join(e2eDir, "translate", "config.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg.Provider.BaseURL = srv.URL + "/v1"
+		cfg.Provider.APIKey = "test-429-key"
+		cfg.Provider.WaitTime = 0
+		cfg.Provider.RetryTime = 1
+		cfg.EntityRecognition.MaxAttempt = maxAttempt
+		cfg.Translation.MaxAttempt = maxAttempt
+		cfg.Observation.Log.Console.Enable = false
+		cfg.Observation.Log.File.Enable = true
+		cfg.Observation.Log.File.File = filepath.Join(workDir, prefix+"_logs.jsonl")
+		cfg.Observation.Metric.Enable = true
+		cfg.Observation.Metric.File = filepath.Join(workDir, prefix+"_metrics.jsonl")
+
+		b, err := json.Marshal(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p := filepath.Join(workDir, prefix+"_config.json")
+		if err := os.WriteFile(p, b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+
+	// Run 1: fails on batch 3 after max_attempt=2 (waits 1s backoff between attempt 1 & 2).
+	cfg1 := write429Cfg("run1", 2)
+	_, stderr1, err1 := runCLIRaw(binPath, repoRoot, nil, nil,
+		"script", "run", scriptVer1Path,
+		"-c", cfg1,
+		"-d", dictPath,
+		"--cache-dir", cacheDir,
+		"-o", outPath,
+	)
+	if err1 == nil || !strings.Contains(stderr1, "429") {
+		t.Fatalf("expected run 1 to fail with HTTP 429 in stderr, err=%v\nstderr:\n%s", err1, stderr1)
+	}
+
+	partialPath := filepath.Join(cacheDir, hash, "translated.partial.json")
+	translatedCachePath := filepath.Join(cacheDir, hash, "translated.json")
+	if _, err := os.Stat(partialPath); err != nil {
+		t.Fatalf("expected partial checkpoint at %s after 429 failure: %v", partialPath, err)
+	}
+	if _, err := os.Stat(translatedCachePath); !os.IsNotExist(err) {
+		t.Fatalf("did not expect full translated.json before completion (err=%v)", err)
+	}
+
+	// Run 2: resumes from partial checkpoint at batch 3, auto-recovers from transient 429, completes batch 4.
+	cfg2 := write429Cfg("run2", 3)
+	runCLI(t, binPath, repoRoot, nil, nil,
+		"script", "run", scriptVer1Path,
+		"-c", cfg2,
+		"-d", dictPath,
+		"--cache-dir", cacheDir,
+		"-o", outPath,
+	)
+
+	mu.Lock()
+	gotCalls := callNum
+	mu.Unlock()
+	if gotCalls != 8 {
+		t.Fatalf("expected exactly 8 HTTP calls across failure+resume runs, got %d", gotCalls)
+	}
+	if _, err := os.Stat(partialPath); !os.IsNotExist(err) {
+		t.Fatalf("expected %s to be deleted after completed translation (err=%v)", partialPath, err)
+	}
+	if _, err := os.Stat(translatedCachePath); err != nil {
+		t.Fatalf("expected final cache at %s: %v", translatedCachePath, err)
+	}
+
+	outBytes, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertVer1ScriptOutput(t, string(outBytes))
+
+	// Verify Run 2 logs record checkpoint resume and 429 backoff.
+	logBytes, err := os.ReadFile(filepath.Join(workDir, "run2_logs.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	logText := string(logBytes)
+	for _, want := range []string{`"resuming translation from partial checkpoint"`, `"translation batch attempt failed"`, `"backoff":true`} {
+		if !strings.Contains(logText, want) {
+			t.Fatalf("run2 log missing %s:\n%s", want, logText)
+		}
+	}
+
+	// Verify Run 2 metrics total_usage reflects resumed batches (requests=3, errors=1, retries=1).
+	metricBytes, err := os.ReadFile(filepath.Join(workDir, "run2_metrics.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	metricLines := strings.Split(strings.TrimSpace(string(metricBytes)), "\n")
+	var totalEv struct {
+		Type     string  `json:"type"`
+		Requests float64 `json:"requests"`
+		Errors   float64 `json:"errors"`
+		Retries  float64 `json:"retries"`
+	}
+	if err := json.Unmarshal([]byte(metricLines[len(metricLines)-1]), &totalEv); err != nil {
+		t.Fatalf("decode final metric line: %v", err)
+	}
+	if totalEv.Type != "total_usage" || totalEv.Requests != 3 || totalEv.Errors != 1 || totalEv.Retries != 1 {
+		t.Fatalf("unexpected run2 total_usage metrics: %+v", totalEv)
+	}
+}
+
+func assertVer1ScriptOutput(t *testing.T, translatedText string) {
+	t.Helper()
+	for _, wantSnippet := range []string{
+		"<BGM_PLAY>bgm_evening_walk,1000",
+		"<SE_PLAY>se_train_door",
+		"<WAIT>300",
+		"<VOICE_PLAY>vo_minato_001",
+		"<ACTOR_FRONT>1",
+		"<EFFECT_FLASH>WHITE,200",
+		"<SPINE>sp_ren_idle,CENTER",
+		"<SPINE_ANIMATOR>wave",
+		"<EFFECT_QUAKE>SMALL,300",
+		"<EV>ev_old_script,IN,600",
+		"<EV_OUT>400",
+		"<GROUP>",
+		"</GROUP>",
+		"<NAME_PLATE>新堂湊",
+		"<NAME_PLATE>朝倉由依",
+		"<SCENARIO_END>",
+	} {
+		if !strings.Contains(translatedText, wantSnippet) {
+			t.Fatalf("translated script missing %q:\n%s", wantSnippet, translatedText)
+		}
+	}
+	if !strings.Contains(translatedText, "「") || !strings.Contains(translatedText, "（") || !strings.Contains(translatedText, "）") {
+		t.Fatalf("translated script should preserve both spoken 「」 and monologue （） wrappers:\n%s", translatedText)
+	}
 }
 
 func assertVer2ScriptOutput(t *testing.T, text string) {
@@ -488,7 +718,15 @@ func loadDotEnvIfNeeded(t *testing.T, envPath, key string) []string {
 
 func runCLI(t *testing.T, binPath, dir string, extraEnv []string, stdin io.Reader, args ...string) string {
 	t.Helper()
-	cmd := exec.Command(binPath, args...)
+	stdout, stderr, err := runCLIRaw(binPath, dir, extraEnv, stdin, args...)
+	if err != nil {
+		t.Fatalf("command %v failed: %v\nstderr:\n%s\nstdout:\n%s", args, err, stderr, stdout)
+	}
+	return stdout
+}
+
+func runCLIRaw(binPath, dir string, extraEnv []string, stdin io.Reader, args ...string) (string, string, error) {
+	cmd := exec.Command(binPath, args...) // #nosec G204 -- E2E harness runs its freshly built test binary
 	cmd.Dir = dir
 	if len(extraEnv) > 0 {
 		cmd.Env = append(os.Environ(), extraEnv...)
@@ -499,10 +737,8 @@ func runCLI(t *testing.T, binPath, dir string, extraEnv []string, stdin io.Reade
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("command %v failed: %v\nstderr:\n%s\nstdout:\n%s", args, err, stderr.String(), stdout.String())
-	}
-	return stdout.String()
+	err := cmd.Run()
+	return stdout.String(), stderr.String(), err
 }
 
 func copyFile(t *testing.T, src, dst string) {

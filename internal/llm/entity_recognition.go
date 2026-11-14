@@ -216,6 +216,11 @@ func (p *Provider) RecognizeEntities(
 		if err := ctx.Err(); err != nil {
 			return nil, fmt.Errorf("entity recognition: %w", err)
 		}
+		if attempt == 0 {
+			if err := p.paceCall(ctx); err != nil {
+				return nil, fmt.Errorf("entity recognition: %w", err)
+			}
+		}
 
 		proposals, lastErr = p.doRecognizeEntitiesOnce(ctx, param.Model, schema, resolved, prompt, attempt+1)
 		if lastErr == nil {
@@ -224,13 +229,26 @@ func (p *Provider) RecognizeEntities(
 		if errors.Is(lastErr, context.Canceled) || errors.Is(lastErr, context.DeadlineExceeded) {
 			return nil, fmt.Errorf("entity recognition: %w", lastErr)
 		}
-		p.log().WarnContext(
-			ctx,
-			"entity recognition attempt failed",
+
+		var delay time.Duration
+		var backoffApplied bool
+		if attempt+1 < param.MaxAttempt {
+			delay, backoffApplied = p.retryDelay(lastErr, attempt)
+		}
+		attrs := []any{
 			slog.Int("attempt", attempt+1),
 			slog.Int("max_attempt", param.MaxAttempt),
 			slog.Any("error", lastErr),
-		)
+		}
+		if delay > 0 {
+			attrs = append(attrs, slog.Duration("wait", delay), slog.Bool("backoff", backoffApplied))
+		}
+		p.log().WarnContext(ctx, "entity recognition attempt failed", attrs...)
+		if delay > 0 {
+			if err := p.sleep(ctx, delay); err != nil {
+				return nil, fmt.Errorf("entity recognition: %w", err)
+			}
+		}
 	}
 	if lastErr != nil {
 		return nil, fmt.Errorf("entity recognition failed after %d attempts: %w", param.MaxAttempt, lastErr)

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
@@ -134,7 +135,10 @@ func initProvider(cfg config.Config, saveRawDir, rawPrefix string, obs *observat
 		return nil, err
 	}
 
-	opts := []option.RequestOption{option.WithAPIKey(apiKey)}
+	opts := []option.RequestOption{
+		option.WithAPIKey(apiKey),
+		option.WithMaxRetries(0),
+	}
 	if cfg.Provider.BaseURL != "" {
 		opts = append(opts, option.WithBaseURL(cfg.Provider.BaseURL))
 	}
@@ -146,6 +150,8 @@ func initProvider(cfg config.Config, saveRawDir, rawPrefix string, obs *observat
 		&client,
 		llm.WithLogger(obs.Logger),
 		llm.WithMetrics(obs.Metrics),
+		llm.WithWaitTime(time.Duration(cfg.Provider.WaitTime)*time.Second),
+		llm.WithRetryTime(time.Duration(cfg.Provider.RetryTime)*time.Second),
 	)
 	return provider, nil
 }

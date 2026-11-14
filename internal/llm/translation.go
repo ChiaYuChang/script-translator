@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -141,9 +142,11 @@ var translationSchema = MustSchema[translationOutput]()
 // TranslateParams configures a Translate call. Defaults belong in config validation;
 // Translate rejects non-positive BatchSize/MaxAttempt and empty Model.
 type TranslateParams struct {
-	Model      string `json:"model" jsonschema:"Model name for script translation"`
-	BatchSize  int    `json:"batch_size" jsonschema:"Number of dialogue units per translation batch"`
-	MaxAttempt int    `json:"max_attempt" jsonschema:"Maximum attempts per translation batch"`
+	Model           string                             `json:"model" jsonschema:"Model name for script translation"`
+	BatchSize       int                                `json:"batch_size" jsonschema:"Number of dialogue units per translation batch"`
+	MaxAttempt      int                                `json:"max_attempt" jsonschema:"Maximum attempts per translation batch"`
+	ResumeFrom      []model.TranslatedText             `json:"-"`
+	OnBatchComplete func([]model.TranslatedText) error `json:"-"`
 }
 
 // TotalBatches returns the number of sequential translation batches needed for
@@ -176,7 +179,20 @@ func (p *Provider) Translate(
 	}
 
 	if len(req.Dialogue) == 0 {
+		if len(param.ResumeFrom) > 0 {
+			return nil, fmt.Errorf("translation: resume count %d exceeds dialogue units 0", len(param.ResumeFrom))
+		}
 		return model.TranslateResponse{}, nil
+	}
+	if err := validateResumePrefix(req.Dialogue, param.ResumeFrom); err != nil {
+		return nil, err
+	}
+
+	translated := make(model.TranslateResponse, len(param.ResumeFrom), len(req.Dialogue))
+	copy(translated, param.ResumeFrom)
+	startOffset := len(param.ResumeFrom)
+	if startOffset == len(req.Dialogue) {
+		return translated, nil
 	}
 
 	schema, err := ToSchemaMap(translationSchema)
@@ -196,9 +212,8 @@ func (p *Provider) Translate(
 		speaker[i] = req.Dialogue[i].Speaker
 	}
 
-	totalBatches := TotalBatches(len(req.Dialogue), param.BatchSize)
-	translated := make(model.TranslateResponse, 0, len(req.Dialogue))
-	for start, batchNum := 0, 1; start < len(req.Dialogue); start, batchNum = start+param.BatchSize, batchNum+1 {
+	totalBatches := TotalBatches(len(req.Dialogue)-startOffset, param.BatchSize)
+	for start, batchNum := startOffset, 1; start < len(req.Dialogue); start, batchNum = start+param.BatchSize, batchNum+1 {
 		end := min(start+param.BatchSize, len(req.Dialogue))
 
 		wireUnits := make([]translateInputUnit, end-start)
@@ -221,6 +236,11 @@ func (p *Provider) Translate(
 			if err := ctx.Err(); err != nil {
 				return nil, fmt.Errorf("translation: batch %d/%d: %w", batchNum, totalBatches, err)
 			}
+			if attempt == 0 {
+				if err := p.paceCall(ctx); err != nil {
+					return nil, fmt.Errorf("translation: batch %d/%d: %w", batchNum, totalBatches, err)
+				}
+			}
 
 			batchResult, lastErr = p.doTranslateBatchOnce(ctx, param.Model, schema, resolved, batchPrompt, req.Dialogue[start:end], batchNum, totalBatches, attempt+1)
 			if lastErr == nil {
@@ -229,24 +249,60 @@ func (p *Provider) Translate(
 			if errors.Is(lastErr, context.Canceled) || errors.Is(lastErr, context.DeadlineExceeded) {
 				return nil, fmt.Errorf("translation: batch %d/%d: %w", batchNum, totalBatches, lastErr)
 			}
-			p.log().WarnContext(
-				ctx,
-				"translation batch attempt failed",
+
+			var delay time.Duration
+			var backoffApplied bool
+			if attempt+1 < param.MaxAttempt {
+				delay, backoffApplied = p.retryDelay(lastErr, attempt)
+			}
+			attrs := []any{
 				slog.Int("batch", batchNum),
 				slog.Int("total_batch", totalBatches),
 				slog.Int("attempt", attempt+1),
 				slog.Int("max_attempt", param.MaxAttempt),
 				slog.Any("error", lastErr),
-			)
+			}
+			if delay > 0 {
+				attrs = append(attrs, slog.Duration("wait", delay), slog.Bool("backoff", backoffApplied))
+			}
+			p.log().WarnContext(ctx, "translation batch attempt failed", attrs...)
+			if delay > 0 {
+				if err := p.sleep(ctx, delay); err != nil {
+					return nil, fmt.Errorf("translation: batch %d/%d: %w", batchNum, totalBatches, err)
+				}
+			}
 		}
 		if lastErr != nil {
 			return nil, fmt.Errorf("translation: batch %d/%d failed after %d attempts: %w", batchNum, totalBatches, param.MaxAttempt, lastErr)
 		}
 
 		translated = append(translated, batchResult...)
+		if param.OnBatchComplete != nil {
+			if err := param.OnBatchComplete(slices.Clone(translated)); err != nil {
+				return nil, fmt.Errorf("translation: persist batch %d/%d checkpoint: %w", batchNum, totalBatches, err)
+			}
+		}
 	}
 
 	return translated, nil
+}
+
+func validateResumePrefix(dialogue []model.TranslateUnit, resume []model.TranslatedText) error {
+	if len(resume) > len(dialogue) {
+		return fmt.Errorf("translation: resume count %d exceeds dialogue units %d", len(resume), len(dialogue))
+	}
+	for i, item := range resume {
+		if item.Index != dialogue[i].Index {
+			return fmt.Errorf("translation: resume unit %d has index %d, want %d", i, item.Index, dialogue[i].Index)
+		}
+		if strings.TrimSpace(item.Text) == "" {
+			return fmt.Errorf("translation: resume index %d has blank text", item.Index)
+		}
+		if err := validateMatchingOuterDelimiters(dialogue[i].Text, item.Text); err != nil {
+			return fmt.Errorf("translation: resume index %d: %w", item.Index, err)
+		}
+	}
+	return nil
 }
 
 func formatEntitiesSection(entities []model.Entity) string {

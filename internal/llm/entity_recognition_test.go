@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"go-script-translate/internal/model"
 )
@@ -291,5 +292,65 @@ func TestRecognizeEntitiesRetriesWithinMaxAttemptAndSucceeds(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].Canonical.From != "秋葉原" {
 		t.Fatalf("unexpected recognized entities: %#v", got)
+	}
+}
+
+func TestRecognizeEntitiesWaitAndRetryBackoff(t *testing.T) {
+	var calls atomic.Int32
+	mockResp, err := json.Marshal(recognitionOutput{
+		Entity: []recognizedEntity{
+			{Canonical: model.NamePair{From: "秋葉原", To: "秋葉原"}, Aliases: []model.NamePair{}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var slept []time.Duration
+	p := newTestProvider(
+		t,
+		func(w http.ResponseWriter, _ *http.Request) {
+			switch calls.Add(1) {
+			case 1, 2:
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusTooManyRequests)
+				_, _ = w.Write([]byte(`{"error":{"message":"rate limit","type":"rate_limit_error"}}`))
+			case 3:
+				writeJSONResponse(t, w, "completed", map[string]any{
+					"type": "output_text",
+					"text": `{"entity": [`,
+				})
+			default:
+				writeJSONResponse(t, w, "completed", map[string]any{
+					"type": "output_text",
+					"text": string(mockResp),
+				})
+			}
+		},
+		WithWaitTime(2*time.Second),
+		WithRetryTime(5*time.Second),
+		withSleep(func(_ context.Context, d time.Duration) error {
+			slept = append(slept, d)
+			return nil
+		}),
+	)
+
+	transcript := model.TranslateRequest{
+		Dialogue: []model.TranslateUnit{{Index: 0, Speaker: "A", Text: "秋葉原"}},
+	}.Transcript()
+	got, err := p.RecognizeEntities(context.Background(), transcript, RecognizeEntitiesParams{
+		Model:      "entity-model-v1",
+		MaxAttempt: 4,
+	})
+	if err != nil {
+		t.Fatalf("RecognizeEntities failed: %v", err)
+	}
+	if len(got) != 1 || got[0].Canonical.From != "秋葉原" {
+		t.Fatalf("unexpected recognized entities: %#v", got)
+	}
+	// Two 429 retries (5s * 2^0, 5s * 2^1) followed by one non-429 retry wait (2s).
+	wantSlept := []time.Duration{5 * time.Second, 10 * time.Second, 2 * time.Second}
+	if !reflect.DeepEqual(slept, wantSlept) {
+		t.Fatalf("recorded sleeps = %v, want %v", slept, wantSlept)
 	}
 }

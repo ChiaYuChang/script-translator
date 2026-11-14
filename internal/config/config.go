@@ -22,6 +22,8 @@ const (
 	DefaultAPIKeyEnv  = "OPENAI_API_KEY"
 	DefaultBatchSize  = 20
 	DefaultMaxAttempt = 3
+	DefaultWaitTime   = 0
+	DefaultRetryTime  = 0
 )
 
 // ProviderConfig defines connection and credential settings for an
@@ -30,6 +32,8 @@ type ProviderConfig struct {
 	BaseURL   string `json:"base_url,omitzero" jsonschema:"Optional OpenAI-compatible API base URL"`
 	APIKey    string `json:"api_key,omitzero" jsonschema:"Optional inline API key overriding api_key_env"`
 	APIKeyEnv string `json:"api_key_env,omitzero" jsonschema:"Environment variable name holding the API key"`
+	WaitTime  int    `json:"wait_time,omitzero" jsonschema:"Seconds to wait between LLM calls/batches (0 disables pacing)"`
+	RetryTime int    `json:"retry_time,omitzero" jsonschema:"Base seconds for exponential backoff on 429/5xx retries (0 disables backoff)"`
 }
 
 // ResolveAPIKey returns the inline APIKey when configured, otherwise reading the
@@ -78,6 +82,8 @@ func Default() Config {
 		CacheDir: DefaultCacheDir,
 		Provider: ProviderConfig{
 			APIKeyEnv: DefaultAPIKeyEnv,
+			WaitTime:  DefaultWaitTime,
+			RetryTime: DefaultRetryTime,
 		},
 		EntityRecognition: llm.RecognizeEntitiesParams{
 			MaxAttempt: DefaultMaxAttempt,
@@ -98,6 +104,7 @@ func Schema() (*jsonschema.Schema, error) {
 		return nil, fmt.Errorf("config: build schema: %w", err)
 	}
 
+	minZeroFloat := 0.0
 	minOneFloat := 1.0
 	minOneInt := 1
 
@@ -117,6 +124,22 @@ func Schema() (*jsonschema.Schema, error) {
 				return nil, fmt.Errorf("config: marshal default api_key_env: %w", err)
 			}
 			apiKeyEnv.Default = b
+		}
+		if waitProp := prov.Properties["wait_time"]; waitProp != nil {
+			b, err := json.Marshal(DefaultWaitTime)
+			if err != nil {
+				return nil, fmt.Errorf("config: marshal default wait_time: %w", err)
+			}
+			waitProp.Default = b
+			waitProp.Minimum = &minZeroFloat
+		}
+		if retryProp := prov.Properties["retry_time"]; retryProp != nil {
+			b, err := json.Marshal(DefaultRetryTime)
+			if err != nil {
+				return nil, fmt.Errorf("config: marshal default retry_time: %w", err)
+			}
+			retryProp.Default = b
+			retryProp.Minimum = &minZeroFloat
 		}
 	}
 
@@ -266,6 +289,12 @@ func (c Config) Validate() error {
 	}
 	if c.Provider.APIKey == "" && c.Provider.APIKeyEnv == "" {
 		return errors.New("provider requires api_key or api_key_env")
+	}
+	if c.Provider.WaitTime < 0 {
+		return fmt.Errorf("provider.wait_time must be non-negative (got %d)", c.Provider.WaitTime)
+	}
+	if c.Provider.RetryTime < 0 {
+		return fmt.Errorf("provider.retry_time must be non-negative (got %d)", c.Provider.RetryTime)
 	}
 
 	if c.EntityRecognition.Model == "" {

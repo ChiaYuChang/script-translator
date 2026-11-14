@@ -30,7 +30,9 @@ CLI 透過 [`config.Load`](internal/config/config.go) 讀取 JSON 設定檔，�
   "cache_dir": "./cache",
   "provider": {
     "base_url": "https://api.openai.com/v1",
-    "api_key_env": "OPENAI_API_KEY"
+    "api_key_env": "OPENAI_API_KEY",
+    "wait_time": 0,
+    "retry_time": 0
   },
   "entity_recognition": {
     "model": "gpt-4.1-mini",
@@ -68,6 +70,8 @@ CLI 透過 [`config.Load`](internal/config/config.go) 讀取 JSON 設定檔，�
 | `provider` | `base_url` | 否 | — | 自訂 OpenAI-compatible API endpoint（須為 `http` / `https` URL） |
 | `provider` | `api_key` | 否 | — | 直接指定 API key（會覆蓋 `api_key_env`） |
 | `provider` | `api_key_env` | 否 | `"OPENAI_API_KEY"` | 讀取 API key 的環境變數名稱 |
+| `provider` | `wait_time` | 否 | `0` | 每次 LLM 呼叫／翻譯 batch 之間及一般錯誤重試前的等待秒數（`0` 表示不等待） |
+| `provider` | `retry_time` | 否 | `0` | 遇到 HTTP `429` 或 `5xx` server error 時的指數退避基準秒數（依序等待 `retry_time * 2^0`, `2^1`, ...；`0` 表示不等待） |
 | `entity_recognition` | `model` | 是 | — | 實體辨識使用的模型名稱 |
 | `entity_recognition` | `max_attempt` | 否 | `3` | 實體辨識失敗時的最大嘗試次數（`>= 1`） |
 | `translation` | `model` | 是 | — | 對話翻譯使用的模型名稱 |
@@ -191,7 +195,7 @@ Console log 輸出在 `stderr`，`stdout` 只保留 JSON，可直接以 `|` 串�
 - `-d, --dict`：唯讀 `entity_dict.json` 路徑（絕不寫回）
 - `-o, --out`：最終譯文輸出路徑（預設 `"translated.txt"`；傳 `"-"` 輸出到 `stdout`）
 - `--cache-dir`：覆寫設定檔 `cache_dir`（設定檔預設 `"./cache"`）
-- `--no-cache`：忽略既有 `<cache_dir>/<hashsum>/` 快取，重新呼叫 LLM 並刷新快取
+- `--no-cache`：忽略既有 `<cache_dir>/<hashsum>/` 快取，重新呼叫 LLM 並刷新快取；若前次執行於某 batch 中斷，預設會讀取 `translated.partial.json` 從已完成的對話單元接續翻譯（支援調整 `batch_size` 後續跑）
 - `--save-raw`：選填目錄路徑，保留每次 Responses API 原始 HTTP JSON 回應
 
 #### `script-translator entity insert`（alias：`import`）
@@ -207,7 +211,7 @@ Console log 輸出在 `stderr`，`stdout` 只保留 JSON，可直接以 `|` 串�
 
 #### `script-translator default all` / `which <key>` / `init`
 
-- `default all`：列出目前所有預設路徑與參數（`CONFIG`、`INPUT`、`OUTPUT`、`CACHE_DIR`、`APIKEY_ENV`、`BATCH_SIZE`、`MAX_ATTEMPT`、`LOG_LEVEL`）；可加 `--json` 以 JSON 格式輸出
+- `default all`：列出目前所有預設路徑與參數（`CONFIG`、`INPUT`、`OUTPUT`、`CACHE_DIR`、`APIKEY_ENV`、`BATCH_SIZE`、`MAX_ATTEMPT`、`WAIT_TIME`、`RETRY_TIME`、`LOG_LEVEL`）；可加 `--json` 以 JSON 格式輸出
 - `default which <key>`：輸出單一指定預設值（不分大小寫，如 `CONFIG`、`APIKEY_ENV`、`CACHE_DIR`），適合搭配 shell script 使用
 - `default init`：於預設設定位置（`~/.config/script-translator/config.json`）建立可通過 schema 驗證的最簡 `config.json`（若已存在須加 `-f / --force` 才覆寫）
 

@@ -62,7 +62,9 @@ func TestLoadFromFileAndExplicitOverrides(t *testing.T) {
 	content := `{
 		"cache_dir": " /tmp/custom-cache ",
 		"provider": {
-			"api_key_env": "CUSTOM_LLM_KEY"
+			"api_key_env": "CUSTOM_LLM_KEY",
+			"wait_time": 2,
+			"retry_time": 5
 		},
 		"entity_recognition": {
 			"model": "model-a",
@@ -95,6 +97,8 @@ func TestLoadFromFileAndExplicitOverrides(t *testing.T) {
 	}
 	if cfg.CacheDir != "/tmp/custom-cache" ||
 		cfg.Provider.APIKeyEnv != "CUSTOM_LLM_KEY" ||
+		cfg.Provider.WaitTime != 2 ||
+		cfg.Provider.RetryTime != 5 ||
 		cfg.EntityRecognition.MaxAttempt != 2 ||
 		cfg.Translation.BatchSize != 15 ||
 		cfg.Translation.MaxAttempt != 4 ||
@@ -160,6 +164,14 @@ func TestParseValidationErrors(t *testing.T) {
 		{
 			name: "empty cache_dir rejected",
 			raw:  `{"cache_dir":"   ","entity_recognition":{"model":"m"},"translation":{"model":"m"}}`,
+		},
+		{
+			name: "negative provider wait_time rejected",
+			raw:  `{"provider":{"wait_time":-1},"entity_recognition":{"model":"m"},"translation":{"model":"m"}}`,
+		},
+		{
+			name: "negative provider retry_time rejected",
+			raw:  `{"provider":{"retry_time":-2},"entity_recognition":{"model":"m"},"translation":{"model":"m"}}`,
 		},
 		{
 			name: "observation file log enabled without file path",

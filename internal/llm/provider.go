@@ -2,7 +2,10 @@ package llm
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"math"
+	"net/http"
 	"time"
 
 	"github.com/openai/openai-go/v3"
@@ -10,7 +13,7 @@ import (
 	"go-script-translate/internal/observation"
 )
 
-// ProviderOption configures optional instrumentation on Provider.
+// ProviderOption configures optional instrumentation and pacing on Provider.
 type ProviderOption func(*Provider)
 
 // WithLogger sets the structured logger used by Provider.
@@ -27,22 +30,126 @@ func WithMetrics(metrics *observation.Metrics) ProviderOption {
 	}
 }
 
-// Provider wraps one OpenAI-compatible client. Models and per-call options are
+// WithWaitTime sets the interval waited before each subsequent LLM call/batch.
+// A zero or negative duration disables inter-call waiting.
+func WithWaitTime(d time.Duration) ProviderOption {
+	return func(p *Provider) {
+		if d > 0 {
+			p.waitTime = d
+		} else {
+			p.waitTime = 0
+		}
+	}
+}
+
+// WithRetryTime sets the base backoff duration used on 429 / 5xx retries
+// (retry k waits RetryTime * (1 << k)). Zero or negative disables backoff.
+func WithRetryTime(d time.Duration) ProviderOption {
+	return func(p *Provider) {
+		if d > 0 {
+			p.retryTime = d
+		} else {
+			p.retryTime = 0
+		}
+	}
+}
+
+func withSleep(fn func(context.Context, time.Duration) error) ProviderOption {
+	return func(p *Provider) {
+		p.sleepFn = fn
+	}
+}
+
+// Provider wraps one OpenAI client. Models and per-call options are
 // passed to each method so entity recognition and translation can use distinct models.
 type Provider struct {
-	client  *openai.Client
-	logger  *slog.Logger
-	metrics *observation.Metrics
+	client    *openai.Client
+	logger    *slog.Logger
+	metrics   *observation.Metrics
+	waitTime  time.Duration
+	retryTime time.Duration
+	sleepFn   func(context.Context, time.Duration) error
+	hasCalled bool
 }
 
 func NewProvider(client *openai.Client, opts ...ProviderOption) *Provider {
-	p := &Provider{client: client}
+	p := &Provider{
+		client:  client,
+		sleepFn: sleepWithContext,
+	}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(p)
 		}
 	}
 	return p
+}
+
+func sleepWithContext(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func (p *Provider) sleep(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return nil
+	}
+	if p != nil && p.sleepFn != nil {
+		return p.sleepFn(ctx, d)
+	}
+	return sleepWithContext(ctx, d)
+}
+
+func (p *Provider) paceCall(ctx context.Context) error {
+	if p == nil {
+		return nil
+	}
+	if p.hasCalled && p.waitTime > 0 {
+		if err := p.sleep(ctx, p.waitTime); err != nil {
+			return err
+		}
+	}
+	p.hasCalled = true
+	return nil
+}
+
+func (p *Provider) retryDelay(err error, retryIdx int) (time.Duration, bool) {
+	if p == nil {
+		return 0, false
+	}
+	if isBackoffStatusError(err) {
+		if p.retryTime <= 0 {
+			return 0, false
+		}
+		shift := min(max(retryIdx, 0), 30)
+		delay := p.retryTime
+		for i := 0; i < shift; i++ {
+			if delay > math.MaxInt64/2 {
+				return math.MaxInt64, true
+			}
+			delay *= 2
+		}
+		return delay, true
+	}
+	return p.waitTime, false
+}
+
+func isBackoffStatusError(err error) bool {
+	var apiErr *openai.Error
+	if errors.As(err, &apiErr) {
+		return apiErr.StatusCode == http.StatusTooManyRequests ||
+			apiErr.StatusCode >= http.StatusInternalServerError
+	}
+	return false
 }
 
 func (p *Provider) log() *slog.Logger {
