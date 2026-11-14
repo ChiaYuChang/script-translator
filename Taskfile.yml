@@ -3,7 +3,7 @@ version: '3'
 dotenv: ['.env']
 
 env:
-  VERSION: v0.1.0
+  VERSION: v0.1.1
 
 vars:
   BIN: ./bin/script-translator

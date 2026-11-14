@@ -43,7 +43,7 @@ func defaultTestTranslateParams() TranslateParams {
 	}
 }
 
-func newTestProvider(t *testing.T, handler http.HandlerFunc, opts ...ProviderOption) (*Provider, *httptest.Server) {
+func newTestProvider(t *testing.T, handler http.HandlerFunc, opts ...ProviderOption) *Provider {
 	t.Helper()
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
@@ -53,7 +53,7 @@ func newTestProvider(t *testing.T, handler http.HandlerFunc, opts ...ProviderOpt
 		option.WithAPIKey("test-key"),
 		option.WithMaxRetries(0),
 	)
-	return NewProvider(&client, opts...), srv
+	return NewProvider(&client, opts...)
 }
 
 func writeJSONResponse(t *testing.T, w http.ResponseWriter, status string, contentItem map[string]any) {
@@ -143,7 +143,7 @@ func parseInputSection(t *testing.T, prompt string) []model.TranslateUnit {
 
 func TestTranslateValidationGuards(t *testing.T) {
 	var calls atomic.Int32
-	p, _ := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+	p := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
 		w.WriteHeader(http.StatusInternalServerError)
 	})
@@ -186,7 +186,7 @@ func TestTranslateValidationGuards(t *testing.T) {
 
 func TestTranslateSingleBatchReordersAndAllowsTextResegmentation(t *testing.T) {
 	var captured capturedResponseRequest
-	p, _ := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+	p := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
 		captured = decodeCapturedRequest(t, r)
 		// Return indices reversed and with different text array lengths.
 		out := mustMarshalJSON(t, translationOutput{
@@ -270,7 +270,7 @@ func TestTranslateMultiBatchHistoryAndEntries(t *testing.T) {
 		}),
 	}
 
-	p, _ := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+	p := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
 		req := decodeCapturedRequest(t, r)
 		idx := len(requests)
 		requests = append(requests, req)
@@ -351,7 +351,7 @@ func TestTranslateMultiBatchHistoryAndEntries(t *testing.T) {
 
 func TestTranslateNoHistoryPollutionAcrossCalls(t *testing.T) {
 	var requests []capturedResponseRequest
-	p, _ := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+	p := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
 		req := decodeCapturedRequest(t, r)
 		requests = append(requests, req)
 		units := parseInputSection(t, req.Input)
@@ -395,7 +395,7 @@ func TestTranslateNoHistoryPollutionAcrossCalls(t *testing.T) {
 
 func TestTranslateRetriesWithinMaxAttemptAndSucceeds(t *testing.T) {
 	var calls atomic.Int32
-	p, _ := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+	p := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
 		n := calls.Add(1)
 		switch n {
 		case 1:
@@ -571,7 +571,7 @@ func TestTranslateValidationErrorsAndFailFast(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var calls atomic.Int32
-			p, _ := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+			p := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
 				n := calls.Add(1)
 				if n == 1 {
 					writeJSONResponse(t, w, "completed", map[string]any{
@@ -619,7 +619,7 @@ func TestTranslateContextCancellationDoesNotRetry(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	var calls atomic.Int32
 
-	p, _ := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+	p := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
 		n := calls.Add(1)
 		if n == 1 {
 			cancel()
@@ -667,7 +667,7 @@ func TestTranslateRejectsMissingIndexEvenWhenInputIsZero(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			p, _ := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+			p := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
 				writeJSONResponse(t, w, "completed", map[string]any{
 					"type": "output_text",
 					"text": tc.body,
@@ -744,7 +744,7 @@ func TestProviderRecordsMetricsAndLogsAcrossRetries(t *testing.T) {
 	logger := slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelInfo})).
 		With(slog.String("run_id", runID))
 
-	p, _ := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+	p := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
 		switch calls.Add(1) {
 		case 1:
 			// Entity recognition succeeds.

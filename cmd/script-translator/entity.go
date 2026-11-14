@@ -85,9 +85,9 @@ func newEntityInsertCmd(deps cliDeps) *cobra.Command {
 				return err
 			}
 
-			fmt.Fprintf(deps.stdout, "saved %d entities to %s (processed %d input entities)\n",
+			_, err = fmt.Fprintf(deps.stdout, "saved %d entities to %s (processed %d input entities)\n",
 				len(merged.Entities), dictPath, len(reviewed.Entities))
-			return nil
+			return err
 		},
 	}
 

@@ -173,10 +173,10 @@ func (o *Observer) Close() error {
 
 func openAppendFile(path, kind string) (*os.File, error) {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return nil, fmt.Errorf("observation: create %s directory %q: %w", kind, dir, err)
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("observation: open %s file %q: %w", kind, path, err)
 	}

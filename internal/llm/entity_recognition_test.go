@@ -148,7 +148,7 @@ func TestRecognizeEntitiesUsesPassedModel(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	p, _ := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+	p := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
 		captured = decodeCapturedRequest(t, r)
 		writeJSONResponse(t, w, "completed", map[string]any{
 			"type": "output_text",
@@ -224,7 +224,7 @@ func TestRecognizeEntitiesUsesPassedModel(t *testing.T) {
 }
 
 func TestRecognizeEntitiesRejectsInvalidSchemaOutput(t *testing.T) {
-	p, _ := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+	p := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
 		writeJSONResponse(t, w, "completed", map[string]any{
 			"type": "output_text",
 			"text": `{"entity":[{"canonical":{"from":"秋葉原","to":"秋葉原"},"aliases":null}]}`,
@@ -256,7 +256,7 @@ func TestRecognizeEntitiesRetriesWithinMaxAttemptAndSucceeds(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	p, _ := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+	p := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
 		switch calls.Add(1) {
 		case 1:
 			writeJSONResponse(t, w, "completed", map[string]any{

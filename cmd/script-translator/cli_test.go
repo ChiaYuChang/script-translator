@@ -395,7 +395,7 @@ func TestVersionAndDefaultPaths(t *testing.T) {
 	workDir := t.TempDir()
 	userCfgRoot := t.TempDir()
 	appCfgDir := filepath.Join(userCfgRoot, appName)
-	if err := os.MkdirAll(appCfgDir, 0o755); err != nil {
+	if err := os.MkdirAll(appCfgDir, 0o750); err != nil {
 		t.Fatal(err)
 	}
 

@@ -50,7 +50,7 @@ func Save(path string, mapping model.EntityMapping) error {
 	}
 
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("entitystore: create directory %q: %w", dir, err)
 	}
 
@@ -73,7 +73,7 @@ func Save(path string, mapping model.EntityMapping) error {
 	if _, err := tmp.WriteString("\n"); err != nil {
 		return fmt.Errorf("entitystore: write trailing newline: %w", err)
 	}
-	if err := tmp.Chmod(0o644); err != nil {
+	if err := tmp.Chmod(0o600); err != nil {
 		return fmt.Errorf("entitystore: chmod temp file: %w", err)
 	}
 	if err := tmp.Close(); err != nil {

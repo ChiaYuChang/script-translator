@@ -21,7 +21,7 @@ func TestLoadMissingAndEmptyMapping(t *testing.T) {
 	}
 
 	emptyMappingPath := filepath.Join(t.TempDir(), "entities.json")
-	if err := os.WriteFile(emptyMappingPath, []byte(`{"entities":[]}`), 0o644); err != nil {
+	if err := os.WriteFile(emptyMappingPath, []byte(`{"entities":[]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	got, err = Load(emptyMappingPath)
@@ -51,7 +51,7 @@ func TestLoadRejectsInvalidJSONAndInvalidMappings(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "entities.json")
-			if err := os.WriteFile(path, []byte(tc.content), 0o644); err != nil {
+			if err := os.WriteFile(path, []byte(tc.content), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := Load(path); err == nil {
@@ -133,7 +133,7 @@ func TestSaveFailurePreservesExistingFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "entities.json")
 	original := `{"entities":[{"id":1,"canonical":{"from":"A","to":"甲"},"aliases":[]}]}` + "\n"
-	if err := os.WriteFile(path, []byte(original), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
