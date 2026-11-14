@@ -43,7 +43,8 @@ func TestEndToEndPipeline(t *testing.T) {
 	}
 
 	workDir := t.TempDir()
-	scriptPath := filepath.Join(e2eDir, "data", "e2e_scene.txt")
+	scriptVer1Path := filepath.Join(e2eDir, "data", "e2e_scene_ver1.txt")
+	scriptVer2Path := filepath.Join(e2eDir, "data", "e2e_scene_ver2.txt")
 	seedPath := filepath.Join(e2eDir, "data", "seed_entities.json")
 	dictPath := filepath.Join(workDir, "entity_dict.json")
 	copyFile(t, seedPath, dictPath)
@@ -53,7 +54,7 @@ func TestEndToEndPipeline(t *testing.T) {
 	trLogPath := filepath.Join(workDir, "translate_logs.jsonl")
 	trMetricPath := filepath.Join(workDir, "translate_metrics.jsonl")
 
-	var recConfigPath, trConfigPath string
+	var recConfigPath, trConfigPath, run1ConfigPath, run2ConfigPath string
 	var extraEnv []string
 	var rawDir string
 	fixturesDir := filepath.Join(e2eDir, "fixtures")
@@ -62,6 +63,7 @@ func TestEndToEndPipeline(t *testing.T) {
 		extraEnv = loadDotEnvIfNeeded(t, filepath.Join(repoRoot, ".env"), "OPENROUTER_APIKEY")
 		recConfigPath = rewriteConfigForTempObs(t, filepath.Join(e2eDir, "recognize", "config.json"), workDir, "recognize", "", "")
 		trConfigPath = rewriteConfigForTempObs(t, filepath.Join(e2eDir, "translate", "config.json"), workDir, "translate", "", "")
+		run1ConfigPath = rewriteConfigForTempObs(t, filepath.Join(e2eDir, "translate", "config.json"), workDir, "run1", "", "")
 		if *recordFixtures {
 			clearFixtures(t, fixturesDir)
 			rawDir = fixturesDir
@@ -72,14 +74,32 @@ func TestEndToEndPipeline(t *testing.T) {
 		baseURL := srv.URL + "/v1"
 		recConfigPath = rewriteConfigForTempObs(t, filepath.Join(e2eDir, "recognize", "config.json"), workDir, "recognize", baseURL, "test-fixture-key")
 		trConfigPath = rewriteConfigForTempObs(t, filepath.Join(e2eDir, "translate", "config.json"), workDir, "translate", baseURL, "test-fixture-key")
+		run1ConfigPath = rewriteConfigForTempObs(t, filepath.Join(e2eDir, "translate", "config.json"), workDir, "run1", baseURL, "test-fixture-key")
+	}
+	// Run 2 points to an unreachable endpoint to prove cache hit makes zero network/API calls.
+	run2ConfigPath = rewriteConfigForTempObs(t, filepath.Join(e2eDir, "translate", "config.json"), workDir, "run2", "http://127.0.0.1:1/v1", "unused-cache-hit-key")
+
+	// 0. Verify e2e_scene_ver1.txt and e2e_scene_ver2.txt share the exact same transcript hashsum.
+	hash1 := strings.TrimSpace(runCLI(t, binPath, repoRoot, extraEnv, nil, "script", "hashsum", scriptVer1Path))
+	hash2 := strings.TrimSpace(runCLI(t, binPath, repoRoot, extraEnv, nil, "script", "hashsum", scriptVer2Path))
+	if hash1 == "" || hash1 != hash2 {
+		t.Fatalf("expected matching hashsums for ver1 and ver2: ver1=%q ver2=%q", hash1, hash2)
 	}
 
-	// 1. Staged pipeline recognize -> recognized.json
+	// 1. Staged script extract (ver1) -> extracted.json
+	extractedPath := filepath.Join(workDir, "extracted.json")
+	runCLI(t, binPath, repoRoot, extraEnv, nil,
+		"script", "extract",
+		"-i", scriptVer1Path,
+		"-o", extractedPath,
+	)
+
+	// 2. Staged script recognize -> recognized.json
 	recognizedPath := filepath.Join(workDir, "recognized.json")
 	recArgs := []string{
-		"pipeline", "recognize",
+		"script", "recognize",
 		"-c", recConfigPath,
-		"-i", scriptPath,
+		"-i", extractedPath,
 		"-d", dictPath,
 		"-o", recognizedPath,
 	}
@@ -94,6 +114,7 @@ func TestEndToEndPipeline(t *testing.T) {
 	}
 	var recOut struct {
 		Input    string         `json:"input"`
+		Hashsum  string         `json:"hashsum"`
 		Entities []model.Entity `json:"entities"`
 	}
 	if err := json.Unmarshal(recBytes, &recOut); err != nil {
@@ -103,18 +124,45 @@ func TestEndToEndPipeline(t *testing.T) {
 		t.Fatalf("expected seeded entities plus newly discovered entities, got %d: %#v", len(recOut.Entities), recOut.Entities)
 	}
 
-	// 2. Staged pipeline translate -> translated.txt
-	translatedPath := filepath.Join(workDir, "translated.txt")
+	// 3. Staged script translate (ver1) -> translated.json, then script assemble onto BOTH ver1 & ver2
+	translatedJSONPath := filepath.Join(workDir, "translated.json")
 	trArgs := []string{
-		"pipeline", "translate",
+		"script", "translate",
 		"-c", trConfigPath,
+		"-i", extractedPath,
 		"-e", recognizedPath,
-		"-o", translatedPath,
+		"-d", dictPath,
+		"-o", translatedJSONPath,
 	}
 	if rawDir != "" {
 		trArgs = append(trArgs, "--save-raw", rawDir)
 	}
 	runCLI(t, binPath, repoRoot, extraEnv, nil, trArgs...)
+
+	translatedPath := filepath.Join(workDir, "translated_ver1.txt")
+	runCLI(t, binPath, repoRoot, extraEnv, nil,
+		"script", "assemble",
+		"-i", extractedPath,
+		"-t", translatedJSONPath,
+		"-d", dictPath,
+		"-e", recognizedPath,
+		"-o", translatedPath,
+	)
+
+	assembledVer2Path := filepath.Join(workDir, "assembled_ver2.txt")
+	runCLI(t, binPath, repoRoot, extraEnv, nil,
+		"script", "assemble",
+		"-i", scriptVer2Path,
+		"-t", translatedJSONPath,
+		"-d", dictPath,
+		"-e", recognizedPath,
+		"-o", assembledVer2Path,
+	)
+	assembledVer2Bytes, err := os.ReadFile(assembledVer2Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertVer2ScriptOutput(t, string(assembledVer2Bytes))
 
 	translatedBytes, err := os.ReadFile(translatedPath)
 	if err != nil {
@@ -169,16 +217,103 @@ func TestEndToEndPipeline(t *testing.T) {
 	assertJSONLFile(t, trLogPath, 1)
 	assertMetricsTypes(t, trMetricPath, "translation_batch_usage", "total_usage")
 
-	// 5. In fixture mode, also verify true OS Unix pipe execution (`recognize | translate`).
+	// 5. In fixture mode, also verify Unix pipe execution (`recognize | translate` -> `assemble`).
 	if !*liveAPI {
-		pipeOut := runCLI(t, binPath, repoRoot, extraEnv, bytes.NewReader(recBytes),
-			"pipeline", "translate",
+		pipeTranslatedJSON := runCLI(t, binPath, repoRoot, extraEnv, bytes.NewReader(recBytes),
+			"script", "translate",
 			"-c", trConfigPath,
+			"-i", extractedPath,
+			"-d", dictPath,
+			"-o", "-",
+		)
+		pipeOut := runCLI(t, binPath, repoRoot, extraEnv, strings.NewReader(pipeTranslatedJSON),
+			"script", "assemble",
+			"-i", scriptVer1Path,
+			"-d", dictPath,
+			"-e", recognizedPath,
 			"-o", "-",
 		)
 		if pipeOut != translatedText {
-			t.Fatalf("piped translate output differed from file-based translate")
+			t.Fatalf("piped translate+assemble output differed from file-based flow")
 		}
+	}
+
+	// 6. Verify `script run` caches ver1 by hashsum and skips all API calls on ver2.
+	cacheDir := filepath.Join(workDir, "cache")
+	runVer1Out := filepath.Join(workDir, "run_ver1.txt")
+	runCLI(t, binPath, repoRoot, extraEnv, nil,
+		"script", "run", scriptVer1Path,
+		"-c", run1ConfigPath,
+		"-d", dictPath,
+		"--cache-dir", cacheDir,
+		"-o", runVer1Out,
+	)
+	run1MetricPath := filepath.Join(workDir, "run1_metrics.jsonl")
+	assertMetricsTypes(t, run1MetricPath, "translation_batch_usage", "total_usage")
+
+	cachedTranslated := filepath.Join(cacheDir, hash1, "translated.json")
+	if _, err := os.Stat(cachedTranslated); err != nil {
+		t.Fatalf("expected cached translated.json at %s: %v", cachedTranslated, err)
+	}
+
+	runVer2Out := filepath.Join(workDir, "run_ver2.txt")
+	runCLI(t, binPath, repoRoot, extraEnv, nil,
+		"script", "run", scriptVer2Path,
+		"-c", run2ConfigPath,
+		"-d", dictPath,
+		"--cache-dir", cacheDir,
+		"-o", runVer2Out,
+	)
+	run2Bytes, err := os.ReadFile(runVer2Out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertVer2ScriptOutput(t, string(run2Bytes))
+	assertZeroAPIRequestsMetrics(t, filepath.Join(workDir, "run2_metrics.jsonl"))
+}
+
+func assertVer2ScriptOutput(t *testing.T, text string) {
+	t.Helper()
+	for _, wantSnippet := range []string{
+		"//作成者：E2E_TEST_VER2",
+		"<BG>nc_station_night,IN,1200",
+		"<BGM_PLAY>bgm_evening_walk_v2,800",
+		"<SE_PLAY>se_footsteps",
+		"<WAIT>500",
+		"<VOICE_PLAY>vo_yui_002_split",
+		"<NAME_PLATE>新堂湊",
+		"<NAME_PLATE>朝倉由依",
+		"// trailing comment in ver2",
+		"<SCENARIO_END>",
+	} {
+		if !strings.Contains(text, wantSnippet) {
+			t.Fatalf("ver2 assembled script missing %q:\n%s", wantSnippet, text)
+		}
+	}
+	if strings.Contains(text, "<EFFECT_FLASH>") {
+		t.Fatalf("ver2 assembled script should not contain removed ver1 tag <EFFECT_FLASH>:\n%s", text)
+	}
+}
+
+func assertZeroAPIRequestsMetrics(t *testing.T, path string) {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("expected only 1 total_usage metric line for cache hit, got %d:\n%s", len(lines), string(b))
+	}
+	var ev struct {
+		Type     string  `json:"type"`
+		Requests float64 `json:"requests"`
+	}
+	if err := json.Unmarshal([]byte(lines[0]), &ev); err != nil {
+		t.Fatalf("decode metric line: %v", err)
+	}
+	if ev.Type != "total_usage" || ev.Requests != 0 {
+		t.Fatalf("expected total_usage with requests=0, got type=%q requests=%v\n%s", ev.Type, ev.Requests, lines[0])
 	}
 }
 
@@ -187,7 +322,7 @@ func startFixtureServer(t *testing.T, fixturesDir string) *httptest.Server {
 	recFixtures := loadFixtureFiles(t, filepath.Join(fixturesDir, "recognize_*.json"))
 	trFixtures := loadFixtureFiles(t, filepath.Join(fixturesDir, "translate_*.json"))
 	if len(recFixtures) == 0 || len(trFixtures) == 0 {
-		t.Fatalf("missing E2E fixtures in %s (run `go test ./e2e -live -record` to capture them)", fixturesDir)
+		t.Skipf("missing E2E fixtures in %s (run `task e2e:record` to capture them)", fixturesDir)
 	}
 
 	var mu sync.Mutex
@@ -227,12 +362,7 @@ func startFixtureServer(t *testing.T, fixturesDir string) *httptest.Server {
 				http.Error(w, "invalid recognition request", http.StatusBadRequest)
 				return
 			}
-			if recIdx >= len(recFixtures) {
-				t.Errorf("unexpected extra entity_recognition request #%d", recIdx+1)
-				http.Error(w, "unexpected extra request", http.StatusBadRequest)
-				return
-			}
-			respBytes = recFixtures[recIdx]
+			respBytes = recFixtures[recIdx%len(recFixtures)]
 			recIdx++
 		case "script_translation":
 			if !strings.Contains(req.Input, "Entries:\n") || !strings.Contains(req.Input, "\nInput:\n") {

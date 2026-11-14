@@ -32,13 +32,8 @@ func Assemble(
 		if _, dup := translatedByIndex[item.Index]; dup {
 			return "", fmt.Errorf("assemble: duplicate translated index %d", item.Index)
 		}
-		if len(item.Text) == 0 {
-			return "", fmt.Errorf("assemble: index %d has empty text", item.Index)
-		}
-		for _, line := range item.Text {
-			if strings.TrimSpace(line) == "" {
-				return "", fmt.Errorf("assemble: index %d has blank text element", item.Index)
-			}
+		if strings.TrimSpace(item.Text) == "" {
+			return "", fmt.Errorf("assemble: index %d has blank text", item.Index)
 		}
 		translatedByIndex[item.Index] = item
 	}
@@ -53,6 +48,8 @@ func Assemble(
 		units = append(units, unit)
 	}
 
+	var blocks []*model.TranslatedUnit
+	var lastRawSpeaker string
 	for _, unit := range source {
 		tr, ok := translatedByIndex[unit.Index]
 		if !ok {
@@ -66,11 +63,24 @@ func Assemble(
 				speaker = unit.Speaker
 			}
 		}
-		units = append(units, model.TranslatedUnit{
-			Index:   unit.Index,
+
+		// Re-group consecutive utterances belonging to the same source <NAME_PLATE>
+		// line so multi-sentence dialogue renders under one speaker header.
+		if len(blocks) > 0 && blocks[len(blocks)-1].Index == unit.LineIndex && lastRawSpeaker == unit.Speaker {
+			last := blocks[len(blocks)-1]
+			last.Text = append(last.Text, tr.Text)
+			continue
+		}
+		blocks = append(blocks, &model.TranslatedUnit{
+			Index:   unit.LineIndex,
 			Speaker: speaker,
-			Text:    append([]string(nil), tr.Text...),
+			Text:    []string{tr.Text},
 		})
+		lastRawSpeaker = unit.Speaker
+	}
+
+	for _, b := range blocks {
+		units = append(units, *b)
 	}
 
 	sort.SliceStable(units, func(i, j int) bool {

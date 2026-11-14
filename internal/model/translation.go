@@ -2,32 +2,27 @@ package model
 
 import "strings"
 
-// TranslateUnit is a text block extracted from the source script.
-// Index is the original order key of the block's first line.
+// TranslateUnit is one dialogue utterance or narration block extracted from a script.
+// Index is the 0-based sequential utterance index across the script (stable across
+// metadata edits); LineIndex is the 0-based source line number of its owning <NAME_PLATE>.
 // An empty Speaker means OS (narration).
 // Text does not contain <NAME_PLATE> or outer Japanese quotation marks.
 type TranslateUnit struct {
-	Index   int      `json:"index"`
-	Speaker string   `json:"name"`
-	Text    []string `json:"text"`
+	Index     int    `json:"index"`
+	LineIndex int    `json:"line_index"`
+	Speaker   string `json:"name"`
+	Text      string `json:"text"`
 }
 
 func (t TranslateUnit) Transcript() string {
-	sb := &strings.Builder{}
+	if t.Text == "" {
+		return ""
+	}
 	speaker := t.Speaker
 	if speaker == "" {
 		speaker = "OS"
 	}
-
-	for i, text := range t.Text {
-		if i > 0 {
-			sb.WriteByte('\n')
-		}
-		sb.WriteString(speaker)
-		sb.WriteByte(':')
-		sb.WriteString(text)
-	}
-	return sb.String()
+	return speaker + ":" + t.Text
 }
 
 // TranslateRequest contains all source blocks and optional glossary entries.
@@ -36,7 +31,7 @@ type TranslateRequest struct {
 	Dialogue []TranslateUnit `json:"dialogue"`
 }
 
-// Transcript formats all non-empty dialogue blocks as speaker-prefixed lines
+// Transcript formats all non-empty dialogue utterances as speaker-prefixed lines
 // separated by newlines.
 func (r TranslateRequest) Transcript() string {
 	var sb strings.Builder
@@ -51,34 +46,33 @@ func (r TranslateRequest) Transcript() string {
 	return sb.String()
 }
 
-// TranslateBatchInput is the portion of the request sent in one LLM call.
-type TranslateBatchInput struct {
-	Entity   []Entity        `json:"entity"`
-	Dialogue []TranslateUnit `json:"dialogue"`
-}
-
-// TranslatedText is the minimal response expected from the LLM.
+// TranslatedText is the minimal response expected from the LLM for one utterance.
 // Speaker is recovered locally by Index; the LLM never needs to return it.
 type TranslatedText struct {
-	Index int      `json:"index"`
-	Text  []string `json:"text"`
+	Index int    `json:"index"`
+	Text  string `json:"text"`
 }
 
 func (t TranslatedText) Transcript(speaker string) string {
-	sb := &strings.Builder{}
 	if speaker == "" {
 		speaker = "OS"
 	}
+	return speaker + ":" + t.Text
+}
 
-	for i, text := range t.Text {
-		if i > 0 {
-			sb.WriteByte('\n')
-		}
-		sb.WriteString(speaker)
-		sb.WriteByte(':')
-		sb.WriteString(text)
-	}
-	return sb.String()
+// ExtractedScript is the portable intermediate artifact produced by `script extract`.
+type ExtractedScript struct {
+	Input    string          `json:"input,omitzero"`
+	Hashsum  string          `json:"hashsum"`
+	Dialogue []TranslateUnit `json:"dialogue"`
+	Retained []ScriptLine    `json:"retained"`
+}
+
+// TranslatedScript is the intermediate translation artifact produced by `script translate`
+// and reused across scripts sharing the same transcript Hashsum.
+type TranslatedScript struct {
+	Hashsum  string           `json:"hashsum"`
+	Dialogue []TranslatedText `json:"dialogue"`
 }
 
 // TranslateBatchOutput is a top-level JSON array returned by an LLM batch.

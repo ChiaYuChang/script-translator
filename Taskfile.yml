@@ -3,16 +3,23 @@ version: '3'
 dotenv: ['.env']
 
 env:
-  VERSION: v0.1.1
+  VERSION: v0.2.0
 
 vars:
   BIN: ./bin/script-translator
-  SCRIPT: e2e/data/e2e_scene.txt
+  SCRIPT: e2e/data/e2e_scene_ver1.txt
+  SCRIPT_VER2: e2e/data/e2e_scene_ver2.txt
   SEED_DICT: e2e/data/seed_entities.json
   DICT: e2e/entity/entity_dict.json
+  EXTRACTED: e2e/recognize/extracted.json
   RECOGNIZED: e2e/recognize/recognized.json
+  TRANSLATED_JSON: e2e/translate/translated.json
   TRANSLATED: e2e/translate/translated.txt
+  TRANSLATED_VER2: e2e/translate/translated_ver2.txt
+  TRANSLATED_RUN_VER1: e2e/translate/translated_run_ver1.txt
+  TRANSLATED_RUN_VER2: e2e/translate/translated_run_ver2.txt
   TRANSLATED_PIPE: e2e/translate/translated_pipe.txt
+  CACHE_DIR: cache
 
 tasks:
   build:
@@ -60,30 +67,57 @@ tasks:
       - '{{.BIN}} entity insert -d {{.DICT}} -i {{.RECOGNIZED}}'
       - '{{.BIN}} entity list -d {{.DICT}}'
 
+  e2e:hashsum:
+    desc: Print and compare transcript hashsums for ver1 and ver2 scripts
+    deps: [build]
+    cmds:
+      - '{{.BIN}} script hashsum {{.SCRIPT}}'
+      - '{{.BIN}} script hashsum {{.SCRIPT_VER2}}'
+
+  e2e:extract:
+    desc: Extract dialogue, skeleton, and hashsum to intermediate JSON
+    deps: [build]
+    cmds:
+      - '{{.BIN}} script extract -i {{.SCRIPT}} -o {{.EXTRACTED}}'
+
   e2e:recognize:
     desc: Run entity recognition stage against live API and save raw response + recognized.json
     deps: [build]
     cmds:
-      - '{{.BIN}} pipeline recognize -c e2e/recognize/config.json -i {{.SCRIPT}} -d {{.DICT}} -o {{.RECOGNIZED}} --save-raw e2e/recognize/raw'
+      - '{{.BIN}} script recognize -c e2e/recognize/config.json -i {{.SCRIPT}} -d {{.DICT}} -o {{.RECOGNIZED}} --save-raw e2e/recognize/raw'
 
   e2e:translate:
-    desc: Run translation stage against live API from recognized.json and save raw responses
+    desc: Run translation stage against live API from recognized.json and save translated.json + raw responses
     deps: [build]
     cmds:
-      - '{{.BIN}} pipeline translate -c e2e/translate/config.json -e {{.RECOGNIZED}} -o {{.TRANSLATED}} --save-raw e2e/translate/raw'
+      - '{{.BIN}} script translate -c e2e/translate/config.json -i {{.SCRIPT}} -d {{.DICT}} -e {{.RECOGNIZED}} -o {{.TRANSLATED_JSON}} --save-raw e2e/translate/raw'
+
+  e2e:assemble:
+    desc: Assemble translated.json back into ver1 and ver2 script formats without calling LLM
+    deps: [build]
+    cmds:
+      - '{{.BIN}} script assemble -i {{.SCRIPT}} -t {{.TRANSLATED_JSON}} -d {{.DICT}} -e {{.RECOGNIZED}} -o {{.TRANSLATED}}'
+      - '{{.BIN}} script assemble -i {{.SCRIPT_VER2}} -t {{.TRANSLATED_JSON}} -d {{.DICT}} -e {{.RECOGNIZED}} -o {{.TRANSLATED_VER2}}'
+
+  e2e:run:
+    desc: Run full cached flow on ver1 (populates cache) then ver2 (cache hit skips LLM)
+    deps: [build]
+    cmds:
+      - '{{.BIN}} script run -c e2e/translate/config.json -i {{.SCRIPT}} -d {{.DICT}} -o {{.TRANSLATED_RUN_VER1}} --cache-dir {{.CACHE_DIR}}'
+      - '{{.BIN}} script run -c e2e/translate/config.json -i {{.SCRIPT_VER2}} -d {{.DICT}} -o {{.TRANSLATED_RUN_VER2}} --cache-dir {{.CACHE_DIR}}'
 
   e2e:pipe:
-    desc: Run full pipeline via Unix pipe against live API (recognize | translate)
+    desc: Run full script flow via Unix pipe against live API (recognize | translate | assemble)
     deps: [build]
     cmds:
-      - '{{.BIN}} pipeline recognize -c e2e/recognize/config.json -i {{.SCRIPT}} -d {{.DICT}} | {{.BIN}} pipeline translate -c e2e/translate/config.json -o {{.TRANSLATED_PIPE}}'
+      - '{{.BIN}} script recognize -c e2e/recognize/config.json -i {{.SCRIPT}} -d {{.DICT}} | {{.BIN}} script translate -c e2e/translate/config.json -d {{.DICT}} -e - | {{.BIN}} script assemble -i {{.SCRIPT}} -t - -d {{.DICT}} -o {{.TRANSLATED_PIPE}}'
 
   e2e:clean:
-    desc: Remove generated E2E artifacts, logs, metrics, and raw dumps
+    desc: Remove generated E2E artifacts, cache, logs, metrics, and raw dumps
     cmds:
-      - rm -rf e2e/recognize/raw e2e/translate/raw
-      - rm -f {{.RECOGNIZED}} e2e/recognize/*.jsonl
-      - rm -f {{.TRANSLATED}} {{.TRANSLATED_PIPE}} e2e/translate/*.jsonl
+      - rm -rf e2e/recognize/raw e2e/translate/raw {{.CACHE_DIR}}
+      - rm -f {{.EXTRACTED}} {{.RECOGNIZED}} e2e/recognize/*.jsonl
+      - rm -f {{.TRANSLATED_JSON}} {{.TRANSLATED}} {{.TRANSLATED_VER2}} {{.TRANSLATED_RUN_VER1}} {{.TRANSLATED_RUN_VER2}} {{.TRANSLATED_PIPE}} e2e/translate/*.jsonl
       - rm -f {{.DICT}}
 
   clean:

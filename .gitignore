@@ -1,9 +1,12 @@
 .env
 bin/
+cache/
 e2e/recognize/raw/
+e2e/recognize/extracted.json
 e2e/recognize/recognized.json
 e2e/recognize/*.jsonl
 e2e/translate/raw/
+e2e/translate/translated.json
 e2e/translate/translated*.txt
 e2e/translate/*.jsonl
 e2e/entity/entity_dict.json

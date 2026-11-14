@@ -34,10 +34,11 @@ const (
 // version is overridden at build time via `-ldflags "-X main.version=..."`.
 var version = "dev"
 
-// recognizePayload is the JSON schema exchanged between `pipeline recognize`,
-// `pipeline translate`, and `entity insert` over files or Unix pipes.
+// recognizePayload is the JSON schema exchanged between `script recognize`,
+// `script translate`, and `entity insert` over files or Unix pipes.
 type recognizePayload struct {
 	Input    string         `json:"input,omitzero"`
+	Hashsum  string         `json:"hashsum,omitzero"`
 	Entities []model.Entity `json:"entities"`
 }
 
@@ -77,7 +78,7 @@ func newRootCmd(deps cliDeps) *cobra.Command {
 	root.SetOut(deps.stdout)
 	root.SetErr(deps.stderr)
 
-	root.AddCommand(newPipelineCmd(deps))
+	root.AddCommand(newScriptCmd(deps))
 	root.AddCommand(newEntityCmd(deps))
 	root.AddCommand(newVersionCmd(deps))
 	return root
@@ -112,25 +113,27 @@ func resolveConfigPath(explicit string, deps cliDeps) (string, error) {
 	return filepath.Join(dir, appName, localConfigFilename), nil
 }
 
-func initObserverAndProvider(configPath, saveRawDir, rawPrefix string, deps cliDeps) (config.Config, *observation.Observer, *llm.Provider, error) {
+func initConfigAndObserver(configPath string, deps cliDeps) (config.Config, *observation.Observer, error) {
 	resolvedConfigPath, err := resolveConfigPath(configPath, deps)
 	if err != nil {
-		return config.Config{}, nil, nil, err
+		return config.Config{}, nil, err
 	}
 	cfg, err := config.Load(resolvedConfigPath)
 	if err != nil {
-		return config.Config{}, nil, nil, err
+		return config.Config{}, nil, err
 	}
 
 	obs, err := observation.InitWithWriter(cfg.Observation, deps.stderr)
 	if err != nil {
-		return config.Config{}, nil, nil, err
+		return config.Config{}, nil, err
 	}
+	return cfg, obs, nil
+}
 
+func initProvider(cfg config.Config, saveRawDir, rawPrefix string, obs *observation.Observer) (*llm.Provider, error) {
 	apiKey, err := cfg.Provider.ResolveAPIKey()
 	if err != nil {
-		_ = obs.Close()
-		return config.Config{}, nil, nil, err
+		return nil, err
 	}
 
 	opts := []option.RequestOption{option.WithAPIKey(apiKey)}
@@ -146,6 +149,19 @@ func initObserverAndProvider(configPath, saveRawDir, rawPrefix string, deps cliD
 		llm.WithLogger(obs.Logger),
 		llm.WithMetrics(obs.Metrics),
 	)
+	return provider, nil
+}
+
+func initObserverAndProvider(configPath, saveRawDir, rawPrefix string, deps cliDeps) (config.Config, *observation.Observer, *llm.Provider, error) {
+	cfg, obs, err := initConfigAndObserver(configPath, deps)
+	if err != nil {
+		return config.Config{}, nil, nil, err
+	}
+	provider, err := initProvider(cfg, saveRawDir, rawPrefix, obs)
+	if err != nil {
+		_ = obs.Close()
+		return config.Config{}, nil, nil, err
+	}
 	return cfg, obs, provider, nil
 }
 

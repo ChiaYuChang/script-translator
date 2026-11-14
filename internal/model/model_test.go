@@ -1,6 +1,7 @@
 package model
 
 import (
+	"encoding/json/v2"
 	"sort"
 	"strings"
 	"testing"
@@ -33,14 +34,38 @@ func TestOSRendering(t *testing.T) {
 func TestTranslateRequestTranscript(t *testing.T) {
 	req := TranslateRequest{
 		Dialogue: []TranslateUnit{
-			{Index: 0, Speaker: "新堂ミナト", Text: []string{"一行目", "二行目"}},
-			{Index: 1, Speaker: "", Text: nil}, // empty block is skipped
-			{Index: 2, Speaker: "", Text: []string{"モノローグ"}},
+			{Index: 0, LineIndex: 2, Speaker: "新堂ミナト", Text: "一行目"},
+			{Index: 1, LineIndex: 2, Speaker: "新堂ミナト", Text: "二行目"},
+			{Index: 2, LineIndex: 5, Speaker: "", Text: ""}, // empty block is skipped
+			{Index: 3, LineIndex: 8, Speaker: "", Text: "モノローグ"},
 		},
 	}
 	want := "新堂ミナト:一行目\n新堂ミナト:二行目\nOS:モノローグ"
 	if got := req.Transcript(); got != want {
 		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestScriptLineJSONRoundTrip(t *testing.T) {
+	orig := ScriptLine{
+		Index:   3,
+		Type:    ScriptLineTypeCmd,
+		Label:   "PAUSE",
+		Content: "<PAUSE>",
+	}
+	b, err := json.Marshal(orig)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+	if !strings.Contains(string(b), `"type":"CMD"`) {
+		t.Fatalf("expected symbolic type in JSON, got %s", string(b))
+	}
+	var got ScriptLine
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+	if got != orig {
+		t.Fatalf("round trip mismatch: got %+v, want %+v", got, orig)
 	}
 }
 

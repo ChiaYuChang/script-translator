@@ -15,10 +15,20 @@ func Read(path string) (model.Script, error) {
 	if err != nil {
 		return model.Script{}, fmt.Errorf("read script %q: %w", path, err)
 	}
+	script, err := ParseBytes(data)
+	if err != nil {
+		return model.Script{}, fmt.Errorf("read script %q: %w", path, err)
+	}
+	return script, nil
+}
+
+// ParseBytes parses raw script bytes, splits them into lines, and classifies each line.
+// Text is trimmed per line; the original line order is kept.
+func ParseBytes(data []byte) (model.Script, error) {
 	data = bytes.TrimPrefix(data, []byte{0xEF, 0xBB, 0xBF})
 
 	if len(bytes.TrimSpace(data)) == 0 {
-		return model.Script{}, fmt.Errorf("read script %q: %w", path, ErrEmptyScript)
+		return model.Script{}, ErrEmptyScript
 	}
 	raw := bytes.Split(data, []byte("\n"))
 	if len(raw) > 0 && len(raw[len(raw)-1]) == 0 {

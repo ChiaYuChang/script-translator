@@ -50,12 +50,13 @@ func TestAssembleEndToEndWithExtract(t *testing.T) {
 		},
 	}
 
-	// Provide translations out of order and with re-segmented text slices.
+	// Provide translations out of order (including two utterances sharing LineIndex=2).
 	translated := model.TranslateResponse{
-		{Index: source[3].Index, Text: []string{"歡迎光臨。"}},
-		{Index: source[1].Index, Text: []string{"早上的咖啡廳裡，流淌著輕柔的音樂。"}},
-		{Index: source[0].Index, Text: []string{"早安，今天天氣真好呢。你點好咖啡了嗎？"}},
-		{Index: source[2].Index, Text: []string{"啊，店員來了。"}},
+		{Index: source[4].Index, Text: "歡迎光臨。"},
+		{Index: source[2].Index, Text: "早上的咖啡廳裡，流淌著輕柔的音樂。"},
+		{Index: source[0].Index, Text: "早安，今天天氣真好呢。"},
+		{Index: source[3].Index, Text: "啊，店員來了。"},
+		{Index: source[1].Index, Text: "你已經點好咖啡了嗎？"},
 	}
 
 	got, err := Assemble(source, translated, retained, entities)
@@ -66,7 +67,8 @@ func TestAssembleEndToEndWithExtract(t *testing.T) {
 	const want = `//【背景：DAILY_001】
 <BG>nc_cafe_morning,IN,1000
 <NAME_PLATE>新堂湊
-「早安，今天天氣真好呢。你點好咖啡了嗎？」
+「早安，今天天氣真好呢。」
+「你已經點好咖啡了嗎？」
 <PAUSE>
 
 <NAME_PLATE>
@@ -86,12 +88,12 @@ func TestAssembleEndToEndWithExtract(t *testing.T) {
 
 func TestAssembleSpeakerUsesExactMatchNotSubstring(t *testing.T) {
 	source := []model.TranslateUnit{
-		{Index: 0, Speaker: "ミナト先輩", Text: []string{"やあ。"}},
-		{Index: 5, Speaker: "ミナト", Text: []string{"はい！"}},
+		{Index: 0, LineIndex: 0, Speaker: "ミナト先輩", Text: "やあ。"},
+		{Index: 1, LineIndex: 5, Speaker: "ミナト", Text: "はい！"},
 	}
 	translated := model.TranslateResponse{
-		{Index: 0, Text: []string{"嗨。"}},
-		{Index: 5, Text: []string{"是！"}},
+		{Index: 0, Text: "嗨。"},
+		{Index: 1, Text: "是！"},
 	}
 	entities := []model.Entity{
 		{
@@ -112,10 +114,10 @@ func TestAssembleSpeakerUsesExactMatchNotSubstring(t *testing.T) {
 
 func TestAssembleCanonicalPrecedenceOverAlias(t *testing.T) {
 	source := []model.TranslateUnit{
-		{Index: 1, Speaker: "湊", Text: []string{"テスト"}},
+		{Index: 0, LineIndex: 1, Speaker: "湊", Text: "テスト"},
 	}
 	translated := model.TranslateResponse{
-		{Index: 1, Text: []string{"測試"}},
+		{Index: 0, Text: "測試"},
 	}
 	entities := []model.Entity{
 		{
@@ -137,10 +139,50 @@ func TestAssembleCanonicalPrecedenceOverAlias(t *testing.T) {
 	}
 }
 
+func TestAssembleCrossScriptMetadataReuse(t *testing.T) {
+	baseRaw := "<NAME_PLATE>A\n「台詞1」\n「台詞2」\n<PAUSE>\n"
+	variantRaw := "// extra comment\n<BG>night\n<NAME_PLATE>A\n「台詞1」\n<VOICE>v01\n<NAME_PLATE>A\n「台詞2」\n<PAUSE>\n"
+
+	baseScript, err := ParseBytes([]byte(baseRaw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	variantScript, err := ParseBytes([]byte(variantRaw))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	baseExt, err := ExtractScript("base.txt", baseScript)
+	if err != nil {
+		t.Fatal(err)
+	}
+	variantExt, err := ExtractScript("variant.txt", variantScript)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if baseExt.Hashsum != variantExt.Hashsum {
+		t.Fatalf("expected identical hashsum: %s vs %s", baseExt.Hashsum, variantExt.Hashsum)
+	}
+
+	// Reuse translations indexed sequentially from baseExt onto variantExt's skeleton.
+	reused := model.TranslateResponse{
+		{Index: 0, Text: "譯文1"},
+		{Index: 1, Text: "譯文2"},
+	}
+	got, err := Assemble(variantExt.Dialogue, reused, RetainedToUnits(variantExt.Retained), nil)
+	if err != nil {
+		t.Fatalf("Assemble() reuse failed: %v", err)
+	}
+	want := "// extra comment\n<BG>night\n<NAME_PLATE>A\n「譯文1」\n<VOICE>v01\n<NAME_PLATE>A\n「譯文2」\n<PAUSE>\n"
+	if got != want {
+		t.Fatalf("reused Assemble() mismatch:\ngot:\n%s\nwant:\n%s", got, want)
+	}
+}
+
 func TestAssembleValidationErrors(t *testing.T) {
 	validSource := []model.TranslateUnit{
-		{Index: 2, Speaker: "A", Text: []string{"こんにちは"}},
-		{Index: 5, Speaker: "", Text: []string{"ト書き"}},
+		{Index: 0, LineIndex: 2, Speaker: "A", Text: "こんにちは"},
+		{Index: 1, LineIndex: 5, Speaker: "", Text: "ト書き"},
 	}
 
 	cases := []struct {
@@ -154,17 +196,17 @@ func TestAssembleValidationErrors(t *testing.T) {
 			name:   "missing translated index",
 			source: validSource,
 			translated: model.TranslateResponse{
-				{Index: 2, Text: []string{"你好"}},
+				{Index: 0, Text: "你好"},
 			},
-			wantErr: "missing translated index 5",
+			wantErr: "missing translated index 1",
 		},
 		{
 			name:   "unknown translated index",
 			source: validSource,
 			translated: model.TranslateResponse{
-				{Index: 2, Text: []string{"你好"}},
-				{Index: 5, Text: []string{"旁白"}},
-				{Index: 99, Text: []string{"多餘"}},
+				{Index: 0, Text: "你好"},
+				{Index: 1, Text: "旁白"},
+				{Index: 99, Text: "多餘"},
 			},
 			wantErr: "unknown index 99",
 		},
@@ -172,47 +214,38 @@ func TestAssembleValidationErrors(t *testing.T) {
 			name:   "duplicate translated index",
 			source: validSource,
 			translated: model.TranslateResponse{
-				{Index: 2, Text: []string{"你好"}},
-				{Index: 2, Text: []string{"重複"}},
-				{Index: 5, Text: []string{"旁白"}},
+				{Index: 0, Text: "你好"},
+				{Index: 0, Text: "重複"},
+				{Index: 1, Text: "旁白"},
 			},
-			wantErr: "duplicate translated index 2",
+			wantErr: "duplicate translated index 0",
 		},
 		{
 			name: "duplicate source index",
 			source: []model.TranslateUnit{
-				{Index: 2, Speaker: "A", Text: []string{"a"}},
-				{Index: 2, Speaker: "B", Text: []string{"b"}},
+				{Index: 2, LineIndex: 2, Speaker: "A", Text: "a"},
+				{Index: 2, LineIndex: 5, Speaker: "B", Text: "b"},
 			},
 			translated: model.TranslateResponse{
-				{Index: 2, Text: []string{"甲"}},
+				{Index: 2, Text: "甲"},
 			},
 			wantErr: "duplicate source index 2",
 		},
 		{
-			name:   "empty text slice",
+			name:   "blank text",
 			source: validSource,
 			translated: model.TranslateResponse{
-				{Index: 2, Text: []string{}},
-				{Index: 5, Text: []string{"旁白"}},
+				{Index: 0, Text: "  \t "},
+				{Index: 1, Text: "旁白"},
 			},
-			wantErr: "empty text",
-		},
-		{
-			name:   "blank text element",
-			source: validSource,
-			translated: model.TranslateResponse{
-				{Index: 2, Text: []string{"你好", "  \t "}},
-				{Index: 5, Text: []string{"旁白"}},
-			},
-			wantErr: "blank text element",
+			wantErr: "blank text",
 		},
 		{
 			name:   "nil retained unit",
 			source: validSource,
 			translated: model.TranslateResponse{
-				{Index: 2, Text: []string{"你好"}},
-				{Index: 5, Text: []string{"旁白"}},
+				{Index: 0, Text: "你好"},
+				{Index: 1, Text: "旁白"},
 			},
 			retained: []model.Unit{nil},
 			wantErr:  "retained unit 0 is nil",

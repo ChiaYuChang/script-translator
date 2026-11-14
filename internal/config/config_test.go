@@ -28,6 +28,9 @@ func TestParseAppliesDefaultsAndTrimsWhitespace(t *testing.T) {
 		t.Fatalf("Parse() unexpected error: %v", err)
 	}
 
+	if cfg.CacheDir != DefaultCacheDir {
+		t.Fatalf("expected default cache_dir %q, got %q", DefaultCacheDir, cfg.CacheDir)
+	}
 	if cfg.Provider.BaseURL != "https://example.invalid/v1" {
 		t.Fatalf("unexpected base_url: %q", cfg.Provider.BaseURL)
 	}
@@ -57,6 +60,7 @@ func TestParseAppliesDefaultsAndTrimsWhitespace(t *testing.T) {
 func TestLoadFromFileAndExplicitOverrides(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	content := `{
+		"cache_dir": " /tmp/custom-cache ",
 		"provider": {
 			"api_key_env": "CUSTOM_LLM_KEY"
 		},
@@ -89,7 +93,8 @@ func TestLoadFromFileAndExplicitOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() unexpected error: %v", err)
 	}
-	if cfg.Provider.APIKeyEnv != "CUSTOM_LLM_KEY" ||
+	if cfg.CacheDir != "/tmp/custom-cache" ||
+		cfg.Provider.APIKeyEnv != "CUSTOM_LLM_KEY" ||
 		cfg.EntityRecognition.MaxAttempt != 2 ||
 		cfg.Translation.BatchSize != 15 ||
 		cfg.Translation.MaxAttempt != 4 ||
@@ -151,6 +156,10 @@ func TestParseValidationErrors(t *testing.T) {
 		{
 			name: "negative translation max_attempt",
 			raw:  `{"entity_recognition":{"model":"m"},"translation":{"model":"m","max_attempt":-1}}`,
+		},
+		{
+			name: "empty cache_dir rejected",
+			raw:  `{"cache_dir":"   ","entity_recognition":{"model":"m"},"translation":{"model":"m"}}`,
 		},
 		{
 			name: "observation file log enabled without file path",

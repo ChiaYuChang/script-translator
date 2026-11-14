@@ -50,9 +50,10 @@ func TestExtract(t *testing.T) {
 	}
 
 	want := []model.TranslateUnit{
-		{Index: 2, Speaker: "A", Text: []string{"AAAABBBB", "CCCC"}},
-		{Index: 8, Speaker: "", Text: []string{"第一行。第二行。"}},
-		{Index: 12, Speaker: "B", Text: []string{"DDD"}},
+		{Index: 0, LineIndex: 2, Speaker: "A", Text: "AAAABBBB"},
+		{Index: 1, LineIndex: 2, Speaker: "A", Text: "CCCC"},
+		{Index: 2, LineIndex: 8, Speaker: "", Text: "第一行。第二行。"},
+		{Index: 3, LineIndex: 12, Speaker: "B", Text: "DDD"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("translations mismatch:\ngot:  %#v\nwant: %#v", got, want)
@@ -78,7 +79,7 @@ func TestExtractEmptyLinesWithinDialogue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []model.TranslateUnit{{Index: 0, Speaker: "A", Text: []string{"AAABBB"}}}
+	want := []model.TranslateUnit{{Index: 0, LineIndex: 0, Speaker: "A", Text: "AAABBB"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
 	}
@@ -94,7 +95,7 @@ func TestExtractNamePlateWithoutText(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []model.TranslateUnit{{Index: 2, Speaker: "B", Text: []string{"AAA"}}}
+	want := []model.TranslateUnit{{Index: 0, LineIndex: 2, Speaker: "B", Text: "AAA"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
 	}

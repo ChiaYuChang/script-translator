@@ -27,6 +27,7 @@ CLI 透過 [`config.Load`](internal/config/config.go) 讀取 JSON 設定檔，�
 
 ```json
 {
+  "cache_dir": "./cache",
   "provider": {
     "base_url": "https://api.openai.com/v1",
     "api_key_env": "OPENAI_API_KEY"
@@ -63,6 +64,7 @@ CLI 透過 [`config.Load`](internal/config/config.go) 讀取 JSON 設定檔，�
 
 | 區塊 | 欄位 | 必填 | 預設值 | 說明 |
 | --- | --- | --- | --- | --- |
+| — | `cache_dir` | 否 | `"./cache"` | `script run` 依 transcript `hashsum` 存放中間檔快取的目錄 |
 | `provider` | `base_url` | 否 | — | 自訂 OpenAI-compatible API endpoint（須為 `http` / `https` URL） |
 | `provider` | `api_key` | 否 | — | 直接指定 API key（會覆蓋 `api_key_env`） |
 | `provider` | `api_key_env` | 否 | `"OPENAI_API_KEY"` | 讀取 API key 的環境變數名稱 |
@@ -82,79 +84,111 @@ CLI 透過 [`config.Load`](internal/config/config.go) 讀取 JSON 設定檔，�
 
 ```text
 script-translator
-├── pipeline
-│   ├── recognize   # 抽取腳本對話並辨識實體，輸出 JSON 到 stdout 或指定檔案
-│   └── translate   # 讀取腳本與實體對照（stdin pipe、檔案或主字典），翻譯並組裝腳本
+├── script
+│   ├── extract     # 抽取腳本對話（含 index / line_index）、retained 骨架與 hashsum 至 JSON
+│   ├── hashsum     # 計算腳本 transcript 的 SHA-256 hashsum（忽略 command / comment 等 metadata）
+│   ├── recognize   # 抽取腳本對話並辨識實體，輸出 JSON（唯讀讀取 entity_dict）
+│   ├── translate   # 呼叫 LLM 翻譯對話，輸出中間譯文 JSON（含 hashsum，不直接組裝）
+│   ├── assemble    # 將翻譯中間 JSON 組裝回目標腳本或 extracted 骨架（預設校驗 hashsum）
+│   └── run         # 一鍵執行全流程，依 cache_dir/<hashsum>/ 快取自動跳過已翻譯的 LLM 呼叫
 ├── entity
 │   ├── insert      # 從 recognize JSON（pipe / 檔案）或 --from/--to 合併寫入主字典（alias: import）
 │   └── list        # 檢視主字典內容
 └── version         # 顯示目前版本（亦可用 --version）
 ```
 
+> 安全原則：所有 `script *` 指令對 `--dict`（`entity_dict.json`）一律為**唯讀讀取**，不會自動寫回主字典；請審閱後由 `entity insert` 手動寫入。
+
 ### 1. 常見工作流
 
-#### A. 直接用 pipe 串接辨識與翻譯
-
-Console log 輸出在 `stderr`，`stdout` 只保留 JSON / 譯文，可直接以 `|` 串接：
+#### A. 一鍵執行（`script run`，支援 `hashsum` 快取重用）
 
 ```bash
 export OPENAI_API_KEY="sk-..."
 
-./bin/script-translator pipeline recognize -i e2e/data/e2e_scene.txt -d entity_dict.json \
-  | ./bin/script-translator pipeline translate -o output.txt
+# 首次執行：辨識 + 翻譯後自動快取於 ./cache/<hashsum>/並輸出譯文
+./bin/script-translator script run script_v1.txt -d entity_dict.json -o translated_v1.txt
+
+# 僅調整 command / comment 的新版本腳本（相同 hashsum）：命中快取跳過 LLM，直接 assemble
+./bin/script-translator script run script_v2.txt -d entity_dict.json -o translated_v2.txt
 ```
 
-`pipeline recognize` 輸出的 JSON 會同時帶 `"input"`（來源腳本路徑）與 `"entities"`，因此後接的 `pipeline translate` 在未傳 `-i` 時會自動沿用該路徑（單獨執行時則預設讀 `script.txt`、寫到 `translated.txt`）。
-
-#### B. 先辨識輸出、人工審閱後再翻譯與入庫
+#### B. 分階段產出中間檔、人工審閱或跨版本重用
 
 ```bash
-# 1. 產生候選實體 JSON（不直接修改 entity_dict.json）
-./bin/script-translator pipeline recognize -i e2e/data/e2e_scene.txt -d entity_dict.json -o candidates.json
+# 1. 抽取對話與骨架（產生 extracted.json，內含 hashsum、dialogue、retained）
+./bin/script-translator script extract -i script_v1.txt -o extracted.json
 
-# 2. 人工檢查 / 微調 candidates.json 中的譯名或別名
+# 2. 辨識候選實體（唯讀參考 entity_dict.json，不修改原檔）
+./bin/script-translator script recognize -i extracted.json -d entity_dict.json -o recognized.json
 
-# 3. 使用審閱後的清單進行翻譯
-./bin/script-translator pipeline translate -e candidates.json -o output.txt
+# 3. 人工檢查 / 入庫（選用）
+./bin/script-translator entity insert -d entity_dict.json -i recognized.json
 
-# 4. 將確認後的實體與新別名合併寫入 entity_dict.json（全有或全無衝突檢查）
-./bin/script-translator entity insert -d entity_dict.json -i candidates.json
+# 4. 產生純翻譯中間檔 translated.json
+./bin/script-translator script translate -i extracted.json -d entity_dict.json -e recognized.json -o translated.json
+
+# 5. 組裝回 script_v1 或只改了 metadata 的 script_v2
+./bin/script-translator script assemble -i script_v2.txt -t translated.json -d entity_dict.json -o translated_v2.txt
 ```
 
-也可直接用 pipe 將辨識結果寫入字典：
+#### C. 直接用 pipe 串接
+
+Console log 輸出在 `stderr`，`stdout` 只保留 JSON，可直接以 `|` 串接：
 
 ```bash
-./bin/script-translator pipeline recognize -i e2e/data/e2e_scene.txt -d entity_dict.json \
-  | ./bin/script-translator entity insert -d entity_dict.json
-```
-
-#### C. 僅用既有字典進行翻譯
-
-```bash
-# 省略 -i / -o 時預設讀取 script.txt 並輸出到 translated.txt
-./bin/script-translator pipeline translate -d entity_dict.json
+./bin/script-translator script recognize -i e2e/data/e2e_scene_ver1.txt -d entity_dict.json \
+  | ./bin/script-translator script translate -d entity_dict.json -e - \
+  | ./bin/script-translator script assemble -i e2e/data/e2e_scene_ver1.txt -d entity_dict.json -o output.txt
 ```
 
 ### 2. 子指令 Flag 參考
 
-#### `script-translator pipeline recognize`
+#### `script-translator script extract [script]`
+
+- `-i, --in`：來源腳本路徑（預設 `"script.txt"`；傳 `"-"` 讀 `stdin`，亦可改用位置參數）
+- `-o, --out`：輸出 `extracted.json` 路徑（預設 `"-"` 輸出到 `stdout`）
+
+#### `script-translator script hashsum [script]`
+
+- `-i, --in`：來源腳本或 `extracted.json` 路徑（預設 `"script.txt"`；傳 `"-"` 讀 `stdin`，亦可改用位置參數）
+- 不需 `config.json`，依正規化對話 `transcript` 輸出 SHA-256。
+
+#### `script-translator script recognize`
 
 - `-c, --config`：設定檔路徑（未指定時優先 `./config.json`，否則 `~/.config/script-translator/config.json`）
-- `-i, --in`：來源腳本路徑（預設 `"script.txt"`）
-- `-d, --dict`：現有 `entity_dict.json` 路徑（選填；檔案不存在時視同空字典）
+- `-i, --in`：來源腳本或 `extracted.json` 路徑（預設 `"script.txt"`）
+- `-d, --dict`：現有 `entity_dict.json` 路徑（選填・唯讀；檔案不存在時視同空字典）
 - `-o, --out`：輸出 JSON 路徑（預設 `"-"`，輸出到 `stdout`）
-- `--save-raw`：選填目錄路徑，保留每次 Responses API 原始 HTTP JSON 回應（可作為 fixture）
+- `--save-raw`：選填目錄路徑，保留每次 Responses API 原始 HTTP JSON 回應
 
-#### `script-translator pipeline translate`
+#### `script-translator script translate`
 
 - `-c, --config`：設定檔路徑（未指定時優先 `./config.json`，否則 `~/.config/script-translator/config.json`）
-- `-i, --in`：來源腳本路徑（預設 `"script.txt"`；從 `recognize` JSON 讀取且未傳 `-i` 時優先沿用其中的 `"input"`）
-- `-e, --entities`：`recognize` 輸出 JSON 檔路徑（或 `"-"` 讀 `stdin`）；不可與 `-d` 同時指定
-- `-d, --dict`：直接使用既有 `entity_dict.json`（不透過 `recognize`）
-- `-o, --out`：譯文輸出路徑（預設 `"translated.txt"`；傳 `"-"` 輸出到 `stdout`）
-- `--save-raw`：選填目錄路徑，保留每次 Responses API 原始 HTTP JSON 回應（可作為 fixture）
+- `-i, --in`：來源腳本或 `extracted.json` 路徑（預設 `"script.txt"`；從 `recognize` JSON 讀取且未傳 `-i` 時優先沿用其中的 `"input"`）
+- `-e, --entities`：`recognize` 輸出 JSON 檔路徑（或 `"-"` 讀 `stdin`）；可與 `-d` 併用於記憶體內合併（不修改 `-d`）
+- `-d, --dict`：唯讀讀取既有 `entity_dict.json`
+- `-o, --out`：中間譯文 `translated.json` 輸出路徑（預設 `"-"`，輸出到 `stdout`）
+- `--save-raw`：選填目錄路徑，保留每次 Responses API 原始 HTTP JSON 回應
 
-> 讀取優先順序：指定 `--entities` → 指定 `--dict` → 偵測到來自 pipe 的 `stdin`。
+#### `script-translator script assemble`
+
+- `-i, --in`：目標腳本或 `extracted.json` 骨架路徑（預設 `"script.txt"`）
+- `-t, --translated`：中間譯文 `translated.json` 路徑（預設 `"-"` 從 `stdin` 讀取）
+- `-d, --dict`：唯讀 `entity_dict.json` 路徑（用於說話者名稱映射）
+- `-e, --entities`：選填額外 `recognize` JSON 路徑（唯讀補充說話者映射）
+- `-o, --out`：最終譯文輸出路徑（預設 `"translated.txt"`；傳 `"-"` 輸出到 `stdout`）
+- `--force`：略過目標腳本與 `translated.json` 的 `hashsum` 檢查
+
+#### `script-translator script run [script]`
+
+- `-c, --config`：設定檔路徑
+- `-i, --in`：來源腳本或 `extracted.json` 路徑（預設 `"script.txt"`，亦可改用位置參數）
+- `-d, --dict`：唯讀 `entity_dict.json` 路徑（絕不寫回）
+- `-o, --out`：最終譯文輸出路徑（預設 `"translated.txt"`；傳 `"-"` 輸出到 `stdout`）
+- `--cache-dir`：覆寫設定檔 `cache_dir`（設定檔預設 `"./cache"`）
+- `--no-cache`：忽略既有 `<cache_dir>/<hashsum>/` 快取，重新呼叫 LLM 並刷新快取
+- `--save-raw`：選填目錄路徑，保留每次 Responses API 原始 HTTP JSON 回應
 
 #### `script-translator entity insert`（alias：`import`）
 
@@ -192,7 +226,7 @@ go vet ./...
 
 [`e2e/e2e_test.go`](e2e/e2e_test.go) **預設使用 `e2e/fixtures/` 內錄製的 raw response 搭配本機 `httptest.Server` 執行**（離線快速驗證）；加上 `-live` flag 才會依 `.env` 的 `OPENROUTER_APIKEY` 與 `e2e/*/config.json` 呼叫真實 API。
 
-- `e2e/data/`：測試腳本（含 `e2e_scene.txt`、`input.txt`、`input_variant.txt`）與初始種子字典 `seed_entities.json`
+- `e2e/data/`：測試腳本（`e2e_scene_ver1.txt`、`e2e_scene_ver2.txt`）與初始種子字典 `seed_entities.json`
 - `e2e/fixtures/`：保留下來的 raw Responses API JSON fixtures（`recognize_001.json`、`translate_001.json`～`translate_004.json`）
 - `e2e/recognize/`：實體辨識設定 `config.json` 與單步測試輸出目錄
 - `e2e/translate/`：翻譯設定 `config.json` 與單步測試輸出目錄
@@ -212,8 +246,12 @@ task e2e:record
 
 # 個別階段 CLI 測試（針對真實 API 並保留 raw response）
 task e2e:entity:reset
+task e2e:hashsum
+task e2e:extract
 task e2e:recognize
 task e2e:translate
+task e2e:assemble
+task e2e:run
 task e2e:entity:insert
 task e2e:pipe
 ```

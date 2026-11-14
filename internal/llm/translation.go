@@ -42,9 +42,9 @@ The user message contains two or three labeled sections:
 3. "Input:": A JSON array of dialogue units to translate, in story order.
 
    Each unit contains:
-   - "index": The original script position. This is a unique identifier.
+   - "index": The sequential dialogue unit identifier.
    - "name": The Japanese speaker name. An empty string indicates narration or OS text.
-   - "text": An array of Japanese text segments belonging to the same dialogue unit.
+   - "text": The Japanese text string for that single utterance or narration block.
 
    Speaker names provide context for localization. Do not translate or return the "name" field itself; the application handles speaker-name replacement separately.
 
@@ -56,7 +56,7 @@ Return exactly one JSON object containing:
   "dialogue": [
     {
       "index": 0,
-      "text": ["Translated text"]
+      "text": "Translated text"
     }
   ]
 }
@@ -66,8 +66,7 @@ Rules:
 - Return exactly one output item for each unit in "Input:".
 - Preserve each "index" exactly. Do not add, omit, duplicate, merge, or split dialogue units across different indices.
 - Return output items in the same order as "Input:".
-- Each "text" must be a non-empty array of non-empty Traditional Chinese strings.
-- You MAY combine or split text segments within a single dialogue unit to improve naturalness. The number of output text segments does not need to match the input.
+- Each "text" must be a non-empty Traditional Chinese string.
 - Use the mappings in "Entries:" consistently. Do not independently reinterpret existing translated names.
 - Preserve placeholders, variable references, markup, control codes, file paths, URLs, and other technical literals appearing inside the source text.
 - Do not add outer Japanese dialogue quotation marks 「」 or script commands such as <NAME_PLATE>. The application reconstructs these elements.
@@ -86,20 +85,19 @@ History:
 Input:
 [
   {
-    "index": 10,
+    "index": 0,
     "name": "新堂ミナト",
-    "text": [
-      "おはよう、ユイ。",
-      "今日は一緒に帰ろうか。"
-    ]
+    "text": "おはよう、ユイ。"
   },
   {
-    "index": 14,
+    "index": 1,
+    "name": "新堂ミナト",
+    "text": "今日は一緒に帰ろうか。"
+  },
+  {
+    "index": 2,
     "name": "",
-    "text": [
-      "午後三時。",
-      "放課後の教室には、二人だけが残っていた。"
-    ]
+    "text": "午後三時。放課後の教室には、二人だけが残っていた。"
   }
 ]
 
@@ -108,26 +106,29 @@ EXAMPLE OUTPUT
 {
   "dialogue": [
     {
-      "index": 10,
-      "text": [
-        "早安，由依。今天要不要一起回家？"
-      ]
+      "index": 0,
+      "text": "早安，由依。"
     },
     {
-      "index": 14,
-      "text": [
-        "下午三點。",
-        "放學後的教室裡，只剩下他們兩人。"
-      ]
+      "index": 1,
+      "text": "今天要不要一起回家？"
+    },
+    {
+      "index": 2,
+      "text": "下午三點。放學後的教室裡，只剩下他們兩人。"
     }
   ]
 }
 
-The first dialogue unit demonstrates that two Japanese text segments may become one natural Traditional Chinese segment without changing its index.
-
-The second dialogue unit demonstrates narration: the source "name" is empty, but no speaker field is returned.
+The final dialogue unit demonstrates narration: the source "name" is empty, and no speaker field is returned.
 
 Return only the JSON object required by the output schema.`
+
+type translateInputUnit struct {
+	Index   int    `json:"index"`
+	Speaker string `json:"name"`
+	Text    string `json:"text"`
+}
 
 // translationOutput wraps the batch output array because Strict Structured
 // Outputs require a JSON object at the schema root.
@@ -190,7 +191,15 @@ func (p *Provider) Translate(
 	for start, batchNum := 0, 1; start < len(req.Dialogue); start, batchNum = start+param.BatchSize, batchNum+1 {
 		end := min(start+param.BatchSize, len(req.Dialogue))
 
-		batchInput, err := json.Marshal(req.Dialogue[start:end])
+		wireUnits := make([]translateInputUnit, end-start)
+		for i, u := range req.Dialogue[start:end] {
+			wireUnits[i] = translateInputUnit{
+				Index:   u.Index,
+				Speaker: u.Speaker,
+				Text:    u.Text,
+			}
+		}
+		batchInput, err := json.Marshal(wireUnits)
 		if err != nil {
 			return nil, fmt.Errorf("translation: batch %d: marshal input: %w", batchNum, err)
 		}
@@ -333,17 +342,12 @@ func parseAndValidateTranslationBatch(
 		if _, dup := byIndex[item.Index]; dup {
 			return nil, fmt.Errorf("duplicate index %d", item.Index)
 		}
-		if len(item.Text) == 0 {
+		if strings.TrimSpace(item.Text) == "" {
 			return nil, fmt.Errorf("index %d: empty text", item.Index)
-		}
-		for _, line := range item.Text {
-			if strings.TrimSpace(line) == "" {
-				return nil, fmt.Errorf("index %d: blank text element", item.Index)
-			}
 		}
 		byIndex[item.Index] = model.TranslatedText{
 			Index: item.Index,
-			Text:  append([]string(nil), item.Text...),
+			Text:  item.Text,
 		}
 	}
 

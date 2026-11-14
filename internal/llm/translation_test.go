@@ -127,15 +127,19 @@ func extractEntriesSection(t *testing.T, prompt string) string {
 	return rest[:end]
 }
 
-func parseInputSection(t *testing.T, prompt string) []model.TranslateUnit {
+func parseInputSection(t *testing.T, prompt string) []translateInputUnit {
 	t.Helper()
 	const marker = "\n\nInput:\n"
 	idx := strings.Index(prompt, marker)
 	if idx < 0 {
 		t.Fatalf("prompt missing Input section:\n%s", prompt)
 	}
-	var units []model.TranslateUnit
-	if err := json.Unmarshal([]byte(prompt[idx+len(marker):]), &units); err != nil {
+	raw := prompt[idx+len(marker):]
+	if strings.Contains(raw, "line_index") {
+		t.Fatalf("prompt Input section unexpectedly leaked line_index:\n%s", raw)
+	}
+	var units []translateInputUnit
+	if err := json.Unmarshal([]byte(raw), &units); err != nil {
 		t.Fatalf("unmarshal Input section: %v", err)
 	}
 	return units
@@ -184,15 +188,15 @@ func TestTranslateValidationGuards(t *testing.T) {
 	}
 }
 
-func TestTranslateSingleBatchReordersAndAllowsTextResegmentation(t *testing.T) {
+func TestTranslateSingleBatchReorders(t *testing.T) {
 	var captured capturedResponseRequest
 	p := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
 		captured = decodeCapturedRequest(t, r)
-		// Return indices reversed and with different text array lengths.
+		// Return indices reversed.
 		out := mustMarshalJSON(t, translationOutput{
 			Dialogue: model.TranslateBatchOutput{
-				{Index: 25, Text: []string{"合併成一句的翻譯"}},
-				{Index: 12, Text: []string{"第一句", "第二句", "第三句"}},
+				{Index: 1, Text: "朝陽灑落，鳥兒正在鳴叫。"},
+				{Index: 0, Text: "早安。"},
 			},
 		})
 		writeJSONResponse(t, w, "completed", map[string]any{
@@ -206,8 +210,8 @@ func TestTranslateSingleBatchReordersAndAllowsTextResegmentation(t *testing.T) {
 			{ID: 1, Canonical: model.NamePair{From: "新堂ミナト", To: "新堂湊"}},
 		},
 		Dialogue: []model.TranslateUnit{
-			{Index: 12, Speaker: "新堂ミナト", Text: []string{"おはよう。"}},
-			{Index: 25, Speaker: "", Text: []string{"朝の日差しが差す。", "鳥が鳴いている。"}},
+			{Index: 0, LineIndex: 12, Speaker: "新堂ミナト", Text: "おはよう。"},
+			{Index: 1, LineIndex: 25, Speaker: "", Text: "朝の日差しが差す。鳥が鳴いている。"},
 		},
 	}
 
@@ -221,8 +225,8 @@ func TestTranslateSingleBatchReordersAndAllowsTextResegmentation(t *testing.T) {
 	}
 
 	want := model.TranslateResponse{
-		{Index: 12, Text: []string{"第一句", "第二句", "第三句"}},
-		{Index: 25, Text: []string{"合併成一句的翻譯"}},
+		{Index: 0, Text: "早安。"},
+		{Index: 1, Text: "朝陽灑落，鳥兒正在鳴叫。"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("response mismatch:\ngot  %#v\nwant %#v", got, want)
@@ -243,8 +247,12 @@ func TestTranslateSingleBatchReordersAndAllowsTextResegmentation(t *testing.T) {
 	if strings.Contains(captured.Input, "History:") {
 		t.Fatalf("first batch should omit History section:\n%s", captured.Input)
 	}
-	if units := parseInputSection(t, captured.Input); !reflect.DeepEqual(units, req.Dialogue) {
-		t.Fatalf("Input section mismatch:\ngot  %#v\nwant %#v", units, req.Dialogue)
+	wantWire := []translateInputUnit{
+		{Index: 0, Speaker: "新堂ミナト", Text: "おはよう。"},
+		{Index: 1, Speaker: "", Text: "朝の日差しが差す。鳥が鳴いている。"},
+	}
+	if units := parseInputSection(t, captured.Input); !reflect.DeepEqual(units, wantWire) {
+		t.Fatalf("Input section mismatch:\ngot  %#v\nwant %#v", units, wantWire)
 	}
 }
 
@@ -253,19 +261,19 @@ func TestTranslateMultiBatchHistoryAndEntries(t *testing.T) {
 	batchResponses := []string{
 		mustMarshalJSON(t, translationOutput{
 			Dialogue: model.TranslateBatchOutput{
-				{Index: 10, Text: []string{"湊說早安"}},
-				{Index: 20, Text: []string{"由依回早安"}},
+				{Index: 0, Text: "湊說早安"},
+				{Index: 1, Text: "由依回早安"},
 			},
 		}),
 		mustMarshalJSON(t, translationOutput{
 			Dialogue: model.TranslateBatchOutput{
-				{Index: 35, Text: []string{"他們走出教室"}},
-				{Index: 30, Text: []string{"鈴聲響起了"}},
+				{Index: 3, Text: "他們走出教室"},
+				{Index: 2, Text: "鈴聲響起了"},
 			},
 		}),
 		mustMarshalJSON(t, translationOutput{
 			Dialogue: model.TranslateBatchOutput{
-				{Index: 42, Text: []string{"放學了。"}},
+				{Index: 4, Text: "放學了。"},
 			},
 		}),
 	}
@@ -292,11 +300,11 @@ func TestTranslateMultiBatchHistoryAndEntries(t *testing.T) {
 			},
 		},
 		Dialogue: []model.TranslateUnit{
-			{Index: 10, Speaker: "新堂ミナト", Text: []string{"おはよう"}},
-			{Index: 20, Speaker: "朝倉ユイ", Text: []string{"おはよう、ミナト"}},
-			{Index: 30, Speaker: "", Text: []string{"チャイムが鳴る。"}},
-			{Index: 35, Speaker: "", Text: []string{"二人は教室を出た。"}},
-			{Index: 42, Speaker: "新堂ミナト", Text: []string{"もう放課後か。"}},
+			{Index: 0, LineIndex: 10, Speaker: "新堂ミナト", Text: "おはよう"},
+			{Index: 1, LineIndex: 20, Speaker: "朝倉ユイ", Text: "おはよう、ミナト"},
+			{Index: 2, LineIndex: 30, Speaker: "", Text: "チャイムが鳴る。"},
+			{Index: 3, LineIndex: 35, Speaker: "", Text: "二人は教室を出た。"},
+			{Index: 4, LineIndex: 42, Speaker: "新堂ミナト", Text: "もう放課後か。"},
 		},
 	}
 
@@ -306,11 +314,11 @@ func TestTranslateMultiBatchHistoryAndEntries(t *testing.T) {
 	}
 
 	want := model.TranslateResponse{
-		{Index: 10, Text: []string{"湊說早安"}},
-		{Index: 20, Text: []string{"由依回早安"}},
-		{Index: 30, Text: []string{"鈴聲響起了"}},
-		{Index: 35, Text: []string{"他們走出教室"}},
-		{Index: 42, Text: []string{"放學了。"}},
+		{Index: 0, Text: "湊說早安"},
+		{Index: 1, Text: "由依回早安"},
+		{Index: 2, Text: "鈴聲響起了"},
+		{Index: 3, Text: "他們走出教室"},
+		{Index: 4, Text: "放學了。"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("merged mismatch:\ngot  %#v\nwant %#v", got, want)
@@ -344,7 +352,7 @@ func TestTranslateMultiBatchHistoryAndEntries(t *testing.T) {
 		t.Fatalf("batch 3 History mismatch:\ngot:\n%s\nwant substring:\n%s", requests[2].Input, wantHistory3)
 	}
 
-	if units := parseInputSection(t, requests[2].Input); len(units) != 1 || units[0].Index != 42 {
+	if units := parseInputSection(t, requests[2].Input); len(units) != 1 || units[0].Index != 4 {
 		t.Fatalf("batch 3 Input mismatch: %#v", units)
 	}
 }
@@ -357,7 +365,7 @@ func TestTranslateNoHistoryPollutionAcrossCalls(t *testing.T) {
 		units := parseInputSection(t, req.Input)
 		resp := translationOutput{
 			Dialogue: model.TranslateBatchOutput{
-				{Index: units[0].Index, Text: []string{"已翻譯"}},
+				{Index: units[0].Index, Text: "已翻譯"},
 			},
 		}
 		b, _ := json.Marshal(resp)
@@ -368,10 +376,10 @@ func TestTranslateNoHistoryPollutionAcrossCalls(t *testing.T) {
 	})
 
 	req1 := model.TranslateRequest{
-		Dialogue: []model.TranslateUnit{{Index: 1, Text: []string{"一"}}},
+		Dialogue: []model.TranslateUnit{{Index: 1, Text: "一"}},
 	}
 	req2 := model.TranslateRequest{
-		Dialogue: []model.TranslateUnit{{Index: 2, Text: []string{"二"}}},
+		Dialogue: []model.TranslateUnit{{Index: 2, Text: "二"}},
 	}
 
 	params := TranslateParams{Model: "gpt-test", BatchSize: 1, MaxAttempt: 1}
@@ -408,19 +416,19 @@ func TestTranslateRetriesWithinMaxAttemptAndSucceeds(t *testing.T) {
 			// Batch 1 attempt 2: missing index -> should retry.
 			writeJSONResponse(t, w, "completed", map[string]any{
 				"type": "output_text",
-				"text": `{"dialogue":[{"text":["錯"]}]}`,
+				"text": `{"dialogue":[{"text":"錯"}]}`,
 			})
 		case 3:
 			// Batch 1 attempt 3: valid.
 			writeJSONResponse(t, w, "completed", map[string]any{
 				"type": "output_text",
-				"text": `{"dialogue":[{"index":0,"text":["第一句"]}]}`,
+				"text": `{"dialogue":[{"index":0,"text":"第一句"}]}`,
 			})
 		case 4:
 			// Batch 2 attempt 1: valid.
 			writeJSONResponse(t, w, "completed", map[string]any{
 				"type": "output_text",
-				"text": `{"dialogue":[{"index":1,"text":["第二句"]}]}`,
+				"text": `{"dialogue":[{"index":1,"text":"第二句"}]}`,
 			})
 		default:
 			t.Fatalf("unexpected call %d", n)
@@ -429,8 +437,8 @@ func TestTranslateRetriesWithinMaxAttemptAndSucceeds(t *testing.T) {
 
 	req := model.TranslateRequest{
 		Dialogue: []model.TranslateUnit{
-			{Index: 0, Speaker: "A", Text: []string{"一"}},
-			{Index: 1, Speaker: "B", Text: []string{"二"}},
+			{Index: 0, Speaker: "A", Text: "一"},
+			{Index: 1, Speaker: "B", Text: "二"},
 		},
 	}
 
@@ -443,8 +451,8 @@ func TestTranslateRetriesWithinMaxAttemptAndSucceeds(t *testing.T) {
 		t.Fatalf("Translate failed: %v", err)
 	}
 	want := model.TranslateResponse{
-		{Index: 0, Text: []string{"第一句"}},
-		{Index: 1, Text: []string{"第二句"}},
+		{Index: 0, Text: "第一句"},
+		{Index: 1, Text: "第二句"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %#v, want %#v", got, want)
@@ -464,7 +472,7 @@ func TestTranslateValidationErrorsAndFailFast(t *testing.T) {
 			resp: func(w http.ResponseWriter) {
 				writeJSONResponse(t, w, "completed", map[string]any{
 					"type": "output_text",
-					"text": `{"dialogue":[{"index":3,"text":["ok"]}]}`,
+					"text": `{"dialogue":[{"index":3,"text":"ok"}]}`,
 				})
 			},
 		},
@@ -473,7 +481,7 @@ func TestTranslateValidationErrorsAndFailFast(t *testing.T) {
 			resp: func(w http.ResponseWriter) {
 				writeJSONResponse(t, w, "completed", map[string]any{
 					"type": "output_text",
-					"text": `{"dialogue":[{"index":3,"text":["a"]},{"index":3,"text":["b"]}]}`,
+					"text": `{"dialogue":[{"index":3,"text":"a"},{"index":3,"text":"b"}]}`,
 				})
 			},
 		},
@@ -482,7 +490,7 @@ func TestTranslateValidationErrorsAndFailFast(t *testing.T) {
 			resp: func(w http.ResponseWriter) {
 				writeJSONResponse(t, w, "completed", map[string]any{
 					"type": "output_text",
-					"text": `{"dialogue":[{"index":3,"text":["a"]},{"index":999,"text":["b"]}]}`,
+					"text": `{"dialogue":[{"index":3,"text":"a"},{"index":999,"text":"b"}]}`,
 				})
 			},
 		},
@@ -491,16 +499,16 @@ func TestTranslateValidationErrorsAndFailFast(t *testing.T) {
 			resp: func(w http.ResponseWriter) {
 				writeJSONResponse(t, w, "completed", map[string]any{
 					"type": "output_text",
-					"text": `{"dialogue":[{"index":3,"text":null},{"index":4,"text":["b"]}]}`,
+					"text": `{"dialogue":[{"index":3,"text":null},{"index":4,"text":"b"}]}`,
 				})
 			},
 		},
 		{
-			name: "empty text array",
+			name: "empty text string",
 			resp: func(w http.ResponseWriter) {
 				writeJSONResponse(t, w, "completed", map[string]any{
 					"type": "output_text",
-					"text": `{"dialogue":[{"index":3,"text":[]},{"index":4,"text":["b"]}]}`,
+					"text": `{"dialogue":[{"index":3,"text":""},{"index":4,"text":"b"}]}`,
 				})
 			},
 		},
@@ -509,16 +517,7 @@ func TestTranslateValidationErrorsAndFailFast(t *testing.T) {
 			resp: func(w http.ResponseWriter) {
 				writeJSONResponse(t, w, "completed", map[string]any{
 					"type": "output_text",
-					"text": `{"dialogue":[{"index":3,"text":["  \t\n "]},{"index":4,"text":["b"]}]}`,
-				})
-			},
-		},
-		{
-			name: "blank line inside text array",
-			resp: func(w http.ResponseWriter) {
-				writeJSONResponse(t, w, "completed", map[string]any{
-					"type": "output_text",
-					"text": `{"dialogue":[{"index":3,"text":["ok","  "]},{"index":4,"text":["b"]}]}`,
+					"text": `{"dialogue":[{"index":3,"text":"  \t\n "},{"index":4,"text":"b"}]}`,
 				})
 			},
 		},
@@ -554,7 +553,7 @@ func TestTranslateValidationErrorsAndFailFast(t *testing.T) {
 			resp: func(w http.ResponseWriter) {
 				writeJSONResponse(t, w, "incomplete", map[string]any{
 					"type": "output_text",
-					"text": `{"dialogue":[{"index":3,"text":["a"]},{"index":4,"text":["b"]}]}`,
+					"text": `{"dialogue":[{"index":3,"text":"a"},{"index":4,"text":"b"}]}`,
 				})
 			},
 		},
@@ -576,7 +575,7 @@ func TestTranslateValidationErrorsAndFailFast(t *testing.T) {
 				if n == 1 {
 					writeJSONResponse(t, w, "completed", map[string]any{
 						"type": "output_text",
-						"text": `{"dialogue":[{"index":1,"text":["一"]},{"index":2,"text":["二"]}]}`,
+						"text": `{"dialogue":[{"index":1,"text":"一"},{"index":2,"text":"二"}]}`,
 					})
 					return
 				}
@@ -590,11 +589,11 @@ func TestTranslateValidationErrorsAndFailFast(t *testing.T) {
 
 			req := model.TranslateRequest{
 				Dialogue: []model.TranslateUnit{
-					{Index: 1, Text: []string{"1"}},
-					{Index: 2, Text: []string{"2"}},
-					{Index: 3, Text: []string{"3"}},
-					{Index: 4, Text: []string{"4"}},
-					{Index: 5, Text: []string{"5"}},
+					{Index: 1, Text: "1"},
+					{Index: 2, Text: "2"},
+					{Index: 3, Text: "3"},
+					{Index: 4, Text: "4"},
+					{Index: 5, Text: "5"},
 				},
 			}
 			_, err := p.Translate(context.Background(), req, TranslateParams{
@@ -625,7 +624,7 @@ func TestTranslateContextCancellationDoesNotRetry(t *testing.T) {
 			cancel()
 			writeJSONResponse(t, w, "completed", map[string]any{
 				"type": "output_text",
-				"text": `{"dialogue":[{"index":1,"text":["一"]}]}`,
+				"text": `{"dialogue":[{"index":1,"text":"一"}]}`,
 			})
 			return
 		}
@@ -634,8 +633,8 @@ func TestTranslateContextCancellationDoesNotRetry(t *testing.T) {
 
 	req := model.TranslateRequest{
 		Dialogue: []model.TranslateUnit{
-			{Index: 1, Text: []string{"1"}},
-			{Index: 2, Text: []string{"2"}},
+			{Index: 1, Text: "1"},
+			{Index: 2, Text: "2"},
 		},
 	}
 
@@ -659,11 +658,11 @@ func TestTranslateRejectsMissingIndexEvenWhenInputIsZero(t *testing.T) {
 	}{
 		{
 			name: "omitted index",
-			body: `{"dialogue":[{"text":["早安"]}]}`,
+			body: `{"dialogue":[{"text":"早安"}]}`,
 		},
 		{
 			name: "null index",
-			body: `{"dialogue":[{"index":null,"text":["早安"]}]}`,
+			body: `{"dialogue":[{"index":null,"text":"早安"}]}`,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -676,7 +675,7 @@ func TestTranslateRejectsMissingIndexEvenWhenInputIsZero(t *testing.T) {
 
 			req := model.TranslateRequest{
 				Dialogue: []model.TranslateUnit{
-					{Index: 0, Speaker: "新堂ミナト", Text: []string{"おはよう"}},
+					{Index: 0, Speaker: "新堂ミナト", Text: "おはよう"},
 				},
 			}
 
@@ -711,7 +710,7 @@ func TestTranslationSchema(t *testing.T) {
 
 	validBytes, err := json.Marshal(translationOutput{
 		Dialogue: model.TranslateBatchOutput{
-			{Index: 0, Text: []string{"早安"}},
+			{Index: 0, Text: "早安"},
 		},
 	})
 	if err != nil {
@@ -724,10 +723,11 @@ func TestTranslationSchema(t *testing.T) {
 	for _, invalid := range []string{
 		`{}`,
 		`{"dialogue":null}`,
-		`{"dialogue":[{"text":["缺 index"]}]}`,
-		`{"dialogue":[{"index":null,"text":["null index"]}]}`,
+		`{"dialogue":[{"text":"缺 index"}]}`,
+		`{"dialogue":[{"index":null,"text":"null index"}]}`,
 		`{"dialogue":[{"index":0,"text":null}]}`,
-		`{"dialogue":[{"index":0,"text":["ok"],"extra":true}]}`,
+		`{"dialogue":[{"index":0,"text":["陣列應拒絕"]}]}`,
+		`{"dialogue":[{"index":0,"text":"ok","extra":true}]}`,
 	} {
 		if err := ValidateJSON(resolved, invalid); err == nil {
 			t.Errorf("expected invalid translation payload to fail schema: %s", invalid)
@@ -782,7 +782,7 @@ func TestProviderRecordsMetricsAndLogsAcrossRetries(t *testing.T) {
 			writeJSONResponseWithUsage(t, w, "completed", map[string]any{
 				"type": "output_text",
 				"text": mustMarshalJSON(t, translationOutput{
-					Dialogue: model.TranslateBatchOutput{{Index: 1, Text: []string{"走吧"}}},
+					Dialogue: model.TranslateBatchOutput{{Index: 1, Text: "走吧"}},
 				}),
 			}, map[string]any{
 				"input_tokens":  80,
@@ -793,7 +793,7 @@ func TestProviderRecordsMetricsAndLogsAcrossRetries(t *testing.T) {
 	}, WithLogger(logger), WithMetrics(metrics))
 
 	req := model.TranslateRequest{
-		Dialogue: []model.TranslateUnit{{Index: 1, Speaker: "A", Text: []string{"秋葉原へ行こう"}}},
+		Dialogue: []model.TranslateUnit{{Index: 1, Speaker: "A", Text: "秋葉原へ行こう"}},
 	}
 	if _, err := p.RecognizeEntities(context.Background(), req.Transcript(), RecognizeEntitiesParams{
 		Model:      "gpt-entity",

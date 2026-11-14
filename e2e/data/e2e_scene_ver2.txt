@@ -1,0 +1,136 @@
+//----------------------------------------------------------------
+//作成者：E2E_TEST_VER2
+//更新履歴：演出・BGMコマンド調整版
+//----------------------------------------------------------------
+//【背景：DAILY_E2E_001_V2】
+<BG>nc_station_night,IN,1200
+<BGM_PLAY>bgm_evening_walk_v2,800
+<SE_PLAY>se_footsteps
+<UI_DISP>ON,0
+
+<NAME_PLATE>
+　放課後の桜ヶ丘駅から、秋葉原へ向かう電車に乗った。
+夕焼けに染まるホームには、部活帰りの学生が並んでいる。
+<WAIT>500
+<PAUSE>
+<ACTOR>0,chr_minato_a,CENTER,CENTER,IN,linear,1000
+<NAME_PLATE>新堂ミナト
+「やっと座れた……。
+　朝からずっと立ちっぱなしだったから、
+　もう足がパンパンだよ」
+<PAUSE>
+<VOICE_PLAY>vo_minato_002
+<NAME_PLATE>新堂ミナト
+「……あ、ユイ。電車の乗り換え、
+　次の駅で合ってるよね？」
+<PAUSE>
+<ACTOR>0,chr_minato_a,CENTER,LEFT,NONE,linear,500
+<ACTOR>1,chr_yui_a,RIGHT,RIGHT,IN,linear,1000
+<ACTOR_FRONT>1
+<VOICE_PLAY>vo_yui_001
+<NAME_PLATE>朝倉ユイ
+「うん、大丈夫。次は秋葉原だよ。」
+<VOICE_PLAY>vo_yui_002_split
+<NAME_PLATE>朝倉ユイ
+「駅前で霧島蓮くんと待ち合わせしてるんだよね？」
+<PAUSE>
+<NAME_PLATE>新堂ミナト
+「そう。あいつ、また迷子になってなければいいけど」
+<PAUSE>
+<NAME_PLATE>朝倉ユイ
+「ミナトってば、心配しすぎだよ」
+<PAUSE>
+// flash removed in ver2
+<NAME_PLATE>
+　改札を抜けると、ネオンの明かりが通りを照らしていた。
+<PAUSE>
+<BG>nc_akihabara_street,IN,600
+<SPINE>sp_ren_idle,CENTER
+<SPINE_ANIMATOR>wave_v2
+<ACTOR>2,chr_ren_a,CENTER,CENTER,IN,linear,600
+<NAME_PLATE>霧島蓮
+「お待たせしました！ミナト先輩、ユイさん！」
+<PAUSE>
+<NAME_PLATE>霧島蓮
+「実はさっきまで、神田明神の方まで歩いてしまって……。
+　道に迷って少し遅れました」
+<PAUSE>
+<NAME_PLATE>朝倉ユイ
+「レンくん、やっぱり迷子になってたんだ」
+<PAUSE>
+<NAME_PLATE>新堂ミナト
+「ほら見ろ、俺の予想どおりだろ。」
+「それで、探してた古い台本は見つかったのか？」
+<PAUSE>
+<EV>ev_old_script,IN,900
+<NAME_PLATE>霧島蓮
+「はい！電気街の裏手にある古書店で見つけました」
+<PAUSE>
+<EV_OUT>300
+<NAME_PLATE>
+　三人は駅近くの小さな喫茶店へ入ることにした。
+<PAUSE>
+<BG>nc_cafe_evening_v2,IN,800
+<ACTOR_OUT>2,CENTER,linear,400
+<ACTOR>3,chr_staff_a,LEFT,LEFT,IN,linear,600
+<SE_PLAY>se_door_bell_v2
+<NAME_PLATE>店員
+「いらっしゃいませ。三名様ですね」
+<PAUSE>
+<NAME_PLATE>朝倉ユイ
+「アイスコーヒーをひとつと、
+　あとプリンもお願いします」
+<PAUSE>
+<NAME_PLATE>新堂ミナト
+「俺も同じので。コーヒーはミルク多めで」
+<PAUSE>
+<NAME_PLATE>霧島蓮
+「じゃあ、僕はホットココアにします」
+<PAUSE>
+<NAME_PLATE>店員
+「かしこまりました。少々お待ちください」
+<PAUSE>
+<ACTOR_OUT>3,LEFT,linear,500
+<NAME_PLATE>
+<PAUSE>
+<NAME_PLATE>霧島蓮
+「そういえば、来週の文化祭の劇なんですけど」
+<PAUSE>
+<NAME_PLATE>霧島蓮
+「後半の掛け合い、ミナト先輩とユイさんのセリフを
+　もう少し増やしてもいいでしょうか？」
+<PAUSE>
+<NAME_PLATE>朝倉ユイ
+「わたしは歓迎だよ！」
+「でもミナト先輩って呼ばれると、ちょっと照れるね」
+<PAUSE>
+<NAME_PLATE>新堂ミナト
+「ユイまでそう呼ぶなよ。普通にミナトでいい」
+<PAUSE>
+<NAME_PLATE>霧島蓮
+「すみません、つい癖で……。
+　じゃあ台本の確認、お願いします」
+<PAUSE>
+<NAME_PLATE>新堂ミナト
+「よし、コーヒーが来る前に第1幕から目を通そう。」
+「レン、メモの用意はできてるか？」
+<PAUSE>
+<NAME_PLATE>霧島蓮
+「ばっちりです！」
+<PAUSE>
+<NAME_PLATE>朝倉ユイ
+「それじゃあ、みんなで読み合わせを始めようか」
+<PAUSE>
+<NAME_PLATE>
+　夕暮れの喫茶店で、三人の台本読みは暗くなるまで続いた。
+短い休憩のあと、文化祭の本番はもうすぐそこだった。
+<PAUSE>
+<GROUP>
+<ACTOR_OUT>0,LEFT,linear,500
+<ACTOR_OUT>1,RIGHT,linear,500
+</GROUP>
+<UI_DISP>OFF,500
+<BGM_STOP>1200
+<BG_OUT>1200
+// trailing comment in ver2
+<SCENARIO_END>

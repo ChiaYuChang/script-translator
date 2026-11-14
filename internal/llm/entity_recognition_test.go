@@ -158,7 +158,7 @@ func TestRecognizeEntitiesUsesPassedModel(t *testing.T) {
 
 	transcript := model.TranslateRequest{
 		Dialogue: []model.TranslateUnit{
-			{Index: 0, Speaker: "新堂ミナト", Text: []string{"秋葉原へ行こう。"}},
+			{Index: 0, Speaker: "新堂ミナト", Text: "秋葉原へ行こう。"},
 		},
 	}.Transcript()
 	dictionary := []model.Entity{
@@ -232,7 +232,7 @@ func TestRecognizeEntitiesRejectsInvalidSchemaOutput(t *testing.T) {
 	})
 
 	transcript := model.TranslateRequest{
-		Dialogue: []model.TranslateUnit{{Index: 0, Speaker: "A", Text: []string{"秋葉原"}}},
+		Dialogue: []model.TranslateUnit{{Index: 0, Speaker: "A", Text: "秋葉原"}},
 	}.Transcript()
 	if _, err := p.RecognizeEntities(context.Background(), transcript, RecognizeEntitiesParams{
 		Model:      "entity-model-v1",
@@ -277,7 +277,7 @@ func TestRecognizeEntitiesRetriesWithinMaxAttemptAndSucceeds(t *testing.T) {
 	})
 
 	transcript := model.TranslateRequest{
-		Dialogue: []model.TranslateUnit{{Index: 0, Speaker: "A", Text: []string{"秋葉原"}}},
+		Dialogue: []model.TranslateUnit{{Index: 0, Speaker: "A", Text: "秋葉原"}},
 	}.Transcript()
 	got, err := p.RecognizeEntities(context.Background(), transcript, RecognizeEntitiesParams{
 		Model:      "entity-model-v1",

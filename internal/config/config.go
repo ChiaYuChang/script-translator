@@ -18,6 +18,7 @@ import (
 )
 
 const (
+	DefaultCacheDir   = "./cache"
 	DefaultAPIKeyEnv  = "OPENAI_API_KEY"
 	DefaultBatchSize  = 20
 	DefaultMaxAttempt = 3
@@ -63,6 +64,7 @@ func (p ProviderConfig) LogValue() slog.Value {
 
 // Config holds application settings aligned with the llm package parameter types.
 type Config struct {
+	CacheDir          string                      `json:"cache_dir,omitzero" jsonschema:"Directory path for cached intermediate script artifacts"`
 	Provider          ProviderConfig              `json:"provider" jsonschema:"OpenAI-compatible provider connection settings"`
 	EntityRecognition llm.RecognizeEntitiesParams `json:"entity_recognition" jsonschema:"Entity recognition step parameters"`
 	Translation       llm.TranslateParams         `json:"translation" jsonschema:"Translation step parameters"`
@@ -73,6 +75,7 @@ type Config struct {
 // Model names remain empty and must be supplied explicitly.
 func Default() Config {
 	return Config{
+		CacheDir: DefaultCacheDir,
 		Provider: ProviderConfig{
 			APIKeyEnv: DefaultAPIKeyEnv,
 		},
@@ -100,6 +103,13 @@ func Schema() (*jsonschema.Schema, error) {
 
 	// Allow omitting "provider" and "observation" so defaults fill nested settings.
 	schema.Required = withoutStrings(schema.Required, "provider", "observation")
+	if cacheProp := schema.Properties["cache_dir"]; cacheProp != nil {
+		b, err := json.Marshal(DefaultCacheDir)
+		if err != nil {
+			return nil, fmt.Errorf("config: marshal default cache_dir: %w", err)
+		}
+		cacheProp.Default = b
+	}
 	if prov := schema.Properties["provider"]; prov != nil {
 		if apiKeyEnv := prov.Properties["api_key_env"]; apiKeyEnv != nil {
 			b, err := json.Marshal(DefaultAPIKeyEnv)
@@ -233,6 +243,7 @@ func Parse(data []byte) (Config, error) {
 }
 
 func (c *Config) normalize() {
+	c.CacheDir = strings.TrimSpace(c.CacheDir)
 	c.Provider.BaseURL = strings.TrimSpace(c.Provider.BaseURL)
 	c.Provider.APIKey = strings.TrimSpace(c.Provider.APIKey)
 	c.Provider.APIKeyEnv = strings.TrimSpace(c.Provider.APIKeyEnv)
@@ -244,6 +255,9 @@ func (c *Config) normalize() {
 // Validate checks semantic constraints not expressible in structural JSON Schema
 // (such as URL syntax and non-whitespace strings).
 func (c Config) Validate() error {
+	if c.CacheDir == "" {
+		return errors.New("cache_dir must not be empty")
+	}
 	if c.Provider.BaseURL != "" {
 		u, err := url.Parse(c.Provider.BaseURL)
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {

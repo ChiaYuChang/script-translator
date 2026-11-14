@@ -54,7 +54,6 @@ func Extract(script model.Script) ([]model.TranslateUnit, []model.Unit, error) {
 		}
 
 		content := strings.Join(parts, "")
-		var texts []string
 		if speaker == "" {
 			// OS: no enclosing dialogue quotes.
 			if strings.HasPrefix(content, "「") ||
@@ -64,23 +63,30 @@ func Extract(script model.Script) ([]model.TranslateUnit, []model.Unit, error) {
 					line.Index,
 				)
 			}
-			texts = []string{content}
+			translations = append(translations, model.TranslateUnit{
+				Index:     len(translations),
+				LineIndex: line.Index,
+				Speaker:   speaker,
+				Text:      content,
+			})
 		} else {
-			// Dialogue: split independent 「」 blocks.
-			var err error
-			texts, err = extractDialogue(content)
+			// Dialogue: each 「」 utterance becomes one independent TranslateUnit.
+			texts, err := extractDialogue(content)
 			if err != nil {
 				return nil, nil, fmt.Errorf(
 					"line %d: %w",
 					line.Index, err,
 				)
 			}
+			for _, seg := range texts {
+				translations = append(translations, model.TranslateUnit{
+					Index:     len(translations),
+					LineIndex: line.Index,
+					Speaker:   speaker,
+					Text:      seg,
+				})
+			}
 		}
-		translations = append(translations, model.TranslateUnit{
-			Index:   line.Index,
-			Speaker: speaker,
-			Text:    texts,
-		})
 		i = j
 	}
 
@@ -88,6 +94,38 @@ func Extract(script model.Script) ([]model.TranslateUnit, []model.Unit, error) {
 		return nil, nil, ErrNoTranslationUnit
 	}
 	return translations, retained, nil
+}
+
+// ExtractScript parses dialogue utterances, retained skeleton lines, and the
+// transcript SHA-256 hashsum into a portable ExtractedScript payload.
+func ExtractScript(inputPath string, script model.Script) (model.ExtractedScript, error) {
+	units, retainedUnits, err := Extract(script)
+	if err != nil {
+		return model.ExtractedScript{}, err
+	}
+	retained := make([]model.ScriptLine, len(retainedUnits))
+	for i, u := range retainedUnits {
+		sl, ok := u.(model.ScriptLine)
+		if !ok {
+			return model.ExtractedScript{}, fmt.Errorf("extract: unexpected retained unit %T", u)
+		}
+		retained[i] = sl
+	}
+	return model.ExtractedScript{
+		Input:    inputPath,
+		Hashsum:  HashsumFromUnits(units),
+		Dialogue: units,
+		Retained: retained,
+	}, nil
+}
+
+// RetainedToUnits converts persisted retained script lines into Assemble units.
+func RetainedToUnits(lines []model.ScriptLine) []model.Unit {
+	out := make([]model.Unit, len(lines))
+	for i, line := range lines {
+		out[i] = line
+	}
+	return out
 }
 
 func extractDialogue(text string) ([]string, error) {
