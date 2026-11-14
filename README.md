@@ -21,7 +21,7 @@ go run ./cmd/script-translator --help
 
 ## 設定檔（`config.json`）
 
-未傳 `-c / --config` 時，CLI 會優先讀取目前目錄的 `./config.json`；若不存在則改讀 `~/.config/script-translator/config.json`（由 `os.UserConfigDir()` 解析）。
+未傳 `-c / --config` 時，CLI 直接讀取 `~/.config/script-translator/config.json`（由 `os.UserConfigDir()` 展開），不進行目前目錄回退；檔案不存在時會直接報錯，可先以 `script-translator default init` 在預設位置產生最簡範本。
 
 CLI 透過 [`config.Load`](internal/config/config.go) 讀取 JSON 設定檔，會以 JSON Schema 驗證結構並自動套用預設值（不允許未知欄位）：
 
@@ -94,6 +94,10 @@ script-translator
 ├── entity
 │   ├── insert      # 從 recognize JSON（pipe / 檔案）或 --from/--to 合併寫入主字典（alias: import）
 │   └── list        # 檢視主字典內容
+├── default
+│   ├── all         # 列出全部預設路徑與參數
+│   ├── which       # 查詢單一預設變數值
+│   └── init        # 在預設設定位置產生最簡 config.json
 └── version         # 顯示目前版本（亦可用 --version）
 ```
 
@@ -156,7 +160,7 @@ Console log 輸出在 `stderr`，`stdout` 只保留 JSON，可直接以 `|` 串�
 
 #### `script-translator script recognize`
 
-- `-c, --config`：設定檔路徑（未指定時優先 `./config.json`，否則 `~/.config/script-translator/config.json`）
+- `-c, --config`：設定檔路徑（預設 `~/.config/script-translator/config.json`）
 - `-i, --in`：來源腳本或 `extracted.json` 路徑（預設 `"script.txt"`）
 - `-d, --dict`：現有 `entity_dict.json` 路徑（選填・唯讀；檔案不存在時視同空字典）
 - `-o, --out`：輸出 JSON 路徑（預設 `"-"`，輸出到 `stdout`）
@@ -164,7 +168,7 @@ Console log 輸出在 `stderr`，`stdout` 只保留 JSON，可直接以 `|` 串�
 
 #### `script-translator script translate`
 
-- `-c, --config`：設定檔路徑（未指定時優先 `./config.json`，否則 `~/.config/script-translator/config.json`）
+- `-c, --config`：設定檔路徑（預設 `~/.config/script-translator/config.json`）
 - `-i, --in`：來源腳本或 `extracted.json` 路徑（預設 `"script.txt"`；從 `recognize` JSON 讀取且未傳 `-i` 時優先沿用其中的 `"input"`）
 - `-e, --entities`：`recognize` 輸出 JSON 檔路徑（或 `"-"` 讀 `stdin`）；可與 `-d` 併用於記憶體內合併（不修改 `-d`）
 - `-d, --dict`：唯讀讀取既有 `entity_dict.json`
@@ -200,6 +204,12 @@ Console log 輸出在 `stderr`，`stdout` 只保留 JSON，可直接以 `|` 串�
 
 - `-d, --dict`：目標 `entity_dict.json` 路徑（**必填**）
 - `--json`：改以 JSON 格式輸出
+
+#### `script-translator default all` / `which <key>` / `init`
+
+- `default all`：列出目前所有預設路徑與參數（`CONFIG`、`INPUT`、`OUTPUT`、`CACHE_DIR`、`APIKEY_ENV`、`BATCH_SIZE`、`MAX_ATTEMPT`、`LOG_LEVEL`）；可加 `--json` 以 JSON 格式輸出
+- `default which <key>`：輸出單一指定預設值（不分大小寫，如 `CONFIG`、`APIKEY_ENV`、`CACHE_DIR`），適合搭配 shell script 使用
+- `default init`：於預設設定位置（`~/.config/script-translator/config.json`）建立可通過 schema 驗證的最簡 `config.json`（若已存在須加 `-f / --force` 才覆寫）
 
 #### `script-translator version`
 

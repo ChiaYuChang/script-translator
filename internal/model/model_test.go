@@ -10,7 +10,10 @@ import (
 func TestUnitRenderingPreservesOrderNotLineCount(t *testing.T) {
 	units := []Unit{
 		ScriptLine{Index: 15, Type: ScriptLineTypeCmd, Content: "<PAUSE>"},
-		TranslatedUnit{Index: 11, Speaker: "新堂湊", Text: []string{"別提醒我啦。每次看時鐘，都覺得時間根本停住了。"}},
+		TranslatedUnit{Index: 11, Speaker: "新堂湊", Text: []string{
+			"「別提醒我啦。每次看時鐘，都覺得時間根本停住了。」",
+			"（好想快點回家……）",
+		}},
 		ScriptLine{Index: 10, Type: ScriptLineTypeCmd, Content: "<PAUSE>"},
 	}
 	sort.SliceStable(units, func(i, j int) bool { return units[i].Order() < units[j].Order() })
@@ -18,7 +21,7 @@ func TestUnitRenderingPreservesOrderNotLineCount(t *testing.T) {
 	for _, u := range units {
 		b.WriteString(u.String())
 	}
-	want := "<PAUSE>\n<NAME_PLATE>新堂湊\n「別提醒我啦。每次看時鐘，都覺得時間根本停住了。」\n<PAUSE>\n"
+	want := "<PAUSE>\n<NAME_PLATE>新堂湊\n「別提醒我啦。每次看時鐘，都覺得時間根本停住了。」\n（好想快點回家……）\n<PAUSE>\n"
 	if got := b.String(); got != want {
 		t.Fatalf("rebuild mismatch:\ngot:  %q\nwant: %q", got, want)
 	}

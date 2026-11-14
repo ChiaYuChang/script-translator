@@ -83,6 +83,9 @@
 <PAUSE>
 <NAME_PLATE>新堂ミナト
 「俺も同じので。コーヒーはミルク多めで」
+<VOICE_PLAY>vo_minato_mono_01
+<NAME_PLATE>新堂ミナト
+（……それにしても、みんな揃うのは久しぶりだな。少し気合を入れていかないと）
 <PAUSE>
 <NAME_PLATE>霧島蓮
 「じゃあ、僕はホットココアにします」

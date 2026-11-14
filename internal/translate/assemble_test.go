@@ -24,6 +24,7 @@ func TestAssembleEndToEndWithExtract(t *testing.T) {
 <PAUSE>
 <NAME_PLATE>ミナト
 「あ、店員さんが来たよ。」
+（財布、持ってたよな……）
 <NAME_PLATE>未知キャラ
 「いらっしゃいませ。」
 <ACTOR>minato,SMILE
@@ -50,13 +51,15 @@ func TestAssembleEndToEndWithExtract(t *testing.T) {
 		},
 	}
 
-	// Provide translations out of order (including two utterances sharing LineIndex=2).
+	// Provide translations out of order (including two utterances sharing LineIndex=2,
+	// plus spoken 「」 + inner monologue （） sharing a NAME_PLATE).
 	translated := model.TranslateResponse{
-		{Index: source[4].Index, Text: "歡迎光臨。"},
+		{Index: source[5].Index, Text: "「歡迎光臨。」"},
 		{Index: source[2].Index, Text: "早上的咖啡廳裡，流淌著輕柔的音樂。"},
-		{Index: source[0].Index, Text: "早安，今天天氣真好呢。"},
-		{Index: source[3].Index, Text: "啊，店員來了。"},
-		{Index: source[1].Index, Text: "你已經點好咖啡了嗎？"},
+		{Index: source[0].Index, Text: "「早安，今天天氣真好呢。」"},
+		{Index: source[4].Index, Text: "（我應該有帶錢包吧……）"},
+		{Index: source[3].Index, Text: "「啊，店員來了。」"},
+		{Index: source[1].Index, Text: "「你已經點好咖啡了嗎？」"},
 	}
 
 	got, err := Assemble(source, translated, retained, entities)
@@ -76,6 +79,7 @@ func TestAssembleEndToEndWithExtract(t *testing.T) {
 <PAUSE>
 <NAME_PLATE>湊
 「啊，店員來了。」
+（我應該有帶錢包吧……）
 <NAME_PLATE>未知キャラ
 「歡迎光臨。」
 <ACTOR>minato,SMILE
@@ -88,12 +92,12 @@ func TestAssembleEndToEndWithExtract(t *testing.T) {
 
 func TestAssembleSpeakerUsesExactMatchNotSubstring(t *testing.T) {
 	source := []model.TranslateUnit{
-		{Index: 0, LineIndex: 0, Speaker: "ミナト先輩", Text: "やあ。"},
-		{Index: 1, LineIndex: 5, Speaker: "ミナト", Text: "はい！"},
+		{Index: 0, LineIndex: 0, Speaker: "ミナト先輩", Text: "「やあ。」"},
+		{Index: 1, LineIndex: 5, Speaker: "ミナト", Text: "「はい！」"},
 	}
 	translated := model.TranslateResponse{
-		{Index: 0, Text: "嗨。"},
-		{Index: 1, Text: "是！"},
+		{Index: 0, Text: "「嗨。」"},
+		{Index: 1, Text: "「是！」"},
 	}
 	entities := []model.Entity{
 		{
@@ -114,10 +118,10 @@ func TestAssembleSpeakerUsesExactMatchNotSubstring(t *testing.T) {
 
 func TestAssembleCanonicalPrecedenceOverAlias(t *testing.T) {
 	source := []model.TranslateUnit{
-		{Index: 0, LineIndex: 1, Speaker: "湊", Text: "テスト"},
+		{Index: 0, LineIndex: 1, Speaker: "湊", Text: "「テスト」"},
 	}
 	translated := model.TranslateResponse{
-		{Index: 0, Text: "測試"},
+		{Index: 0, Text: "「測試」"},
 	}
 	entities := []model.Entity{
 		{
@@ -166,8 +170,8 @@ func TestAssembleCrossScriptMetadataReuse(t *testing.T) {
 
 	// Reuse translations indexed sequentially from baseExt onto variantExt's skeleton.
 	reused := model.TranslateResponse{
-		{Index: 0, Text: "譯文1"},
-		{Index: 1, Text: "譯文2"},
+		{Index: 0, Text: "「譯文1」"},
+		{Index: 1, Text: "「譯文2」"},
 	}
 	got, err := Assemble(variantExt.Dialogue, reused, RetainedToUnits(variantExt.Retained), nil)
 	if err != nil {

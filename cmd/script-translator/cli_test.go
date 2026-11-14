@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"go-script-translate/internal/config"
 	"go-script-translate/internal/entitystore"
 	"go-script-translate/internal/model"
 )
@@ -23,6 +24,7 @@ func writeTestScript(t *testing.T, dir string) string {
 		"<BG>bg_morning",
 		"<NAME_PLATE>新堂ミナト",
 		"「秋葉原へ行こう」",
+		"（財布、持ってるよな……）",
 		"<PAUSE>",
 		"<NAME_PLATE>",
 		"夕方の教室。",
@@ -111,13 +113,14 @@ func writeMockResponsesServer(t *testing.T) *httptest.Server {
 			if err := json.Unmarshal([]byte(inputJSON), &units); err != nil {
 				t.Fatalf("unmarshal translation input units: %v\ninput:\n%s", err, inputJSON)
 			}
-			if len(units) != 2 {
-				t.Fatalf("expected 2 units, got %d", len(units))
+			if len(units) != 3 {
+				t.Fatalf("expected 3 units, got %d", len(units))
 			}
 			b, err := json.Marshal(map[string]any{
 				"dialogue": []map[string]any{
-					{"index": units[0].Index, "text": "去秋葉原吧"},
-					{"index": units[1].Index, "text": "傍晚的教室。"},
+					{"index": units[0].Index, "text": "「去秋葉原吧」"},
+					{"index": units[1].Index, "text": "（我應該有帶錢包吧……）"},
+					{"index": units[2].Index, "text": "傍晚的教室。"},
 				},
 			})
 			if err != nil {
@@ -284,13 +287,14 @@ func TestScriptStagedExtractRecognizeTranslateAssembleAndEntityInsert(t *testing
 	translatedText := string(translatedBytes)
 	if !strings.Contains(translatedText, "<NAME_PLATE>新堂湊") ||
 		!strings.Contains(translatedText, "「去秋葉原吧」") ||
+		!strings.Contains(translatedText, "（我應該有帶錢包吧……）") ||
 		!strings.Contains(translatedText, "傍晚的教室。") {
 		t.Fatalf("unexpected merged script:\n%s", translatedText)
 	}
 
 	// Verify merging the same translated.json onto a metadata-edited script succeeds and keeps new metadata.
 	variantPath := filepath.Join(dir, "variant.txt")
-	variantRaw := "// updated header\n<BGM_PLAY>bgm_new,500\n<BG>bg_night\n\n<NAME_PLATE>新堂ミナト\n「秋葉原へ行こう」\n<VOICE>v001\n<NAME_PLATE>\n夕方の教室。\n"
+	variantRaw := "// updated header\n<BGM_PLAY>bgm_new,500\n<BG>bg_night\n\n<NAME_PLATE>新堂ミナト\n「秋葉原へ行こう」\n<VOICE>v001\n<NAME_PLATE>新堂ミナト\n（財布、持ってるよな……）\n<NAME_PLATE>\n夕方の教室。\n"
 	if err := os.WriteFile(variantPath, []byte(variantRaw), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -311,7 +315,7 @@ func TestScriptStagedExtractRecognizeTranslateAssembleAndEntityInsert(t *testing
 	if err := varMergeCmd.Execute(); err != nil {
 		t.Fatalf("variant script merge failed: %v", err)
 	}
-	for _, want := range []string{"// updated header", "<BGM_PLAY>bgm_new,500", "<VOICE>v001", "<NAME_PLATE>新堂湊", "「去秋葉原吧」", "傍晚的教室。"} {
+	for _, want := range []string{"// updated header", "<BGM_PLAY>bgm_new,500", "<VOICE>v001", "<NAME_PLATE>新堂湊", "「去秋葉原吧」", "（我應該有帶錢包吧……）", "傍晚的教室。"} {
 		if !strings.Contains(varMergedOut.String(), want) {
 			t.Fatalf("variant merged output missing %q:\n%s", want, varMergedOut.String())
 		}
@@ -319,7 +323,7 @@ func TestScriptStagedExtractRecognizeTranslateAssembleAndEntityInsert(t *testing
 
 	// Mismatched hashsum is rejected unless --force is supplied.
 	differentPath := filepath.Join(dir, "different.txt")
-	if err := os.WriteFile(differentPath, []byte("<NAME_PLATE>新堂ミナト\n「別セリフ」\n<NAME_PLATE>\n夕方の教室。\n"), 0o600); err != nil {
+	if err := os.WriteFile(differentPath, []byte("<NAME_PLATE>新堂ミナト\n「別セリフ」\n（別のモノローグ）\n<NAME_PLATE>\n夕方の教室。\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	mismatchCmd := newRootCmd(cliDeps{
@@ -459,7 +463,7 @@ func TestScriptRunCacheHitAndNoCache(t *testing.T) {
 
 	script1Path := writeTestScript(t, dir)
 	script2Path := filepath.Join(dir, "script_v2.txt")
-	script2Raw := "// updated meta\n<BGM_PLAY>bgm_new,300\n<NAME_PLATE>新堂ミナト\n「秋葉原へ行こう」\n<VOICE>v1\n<NAME_PLATE>\n夕方の教室。\n"
+	script2Raw := "// updated meta\n<BGM_PLAY>bgm_new,300\n<NAME_PLATE>新堂ミナト\n「秋葉原へ行こう」\n<VOICE>v1\n<NAME_PLATE>新堂ミナト\n（財布、持ってるよな……）\n<NAME_PLATE>\n夕方の教室。\n"
 	if err := os.WriteFile(script2Path, []byte(script2Raw), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -539,7 +543,7 @@ func TestScriptRunCacheHitAndNoCache(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"<BGM_PLAY>bgm_new,300", "<VOICE>v1", "<NAME_PLATE>新堂湊", "「去秋葉原吧」", "傍晚的教室。"} {
+	for _, want := range []string{"<BGM_PLAY>bgm_new,300", "<VOICE>v1", "<NAME_PLATE>新堂湊", "「去秋葉原吧」", "（我應該有帶錢包吧……）", "傍晚的教室。"} {
 		if !strings.Contains(string(out2Bytes), want) {
 			t.Fatalf("cached run output missing %q:\n%s", want, string(out2Bytes))
 		}
@@ -670,17 +674,25 @@ func TestVersionAndDefaultPaths(t *testing.T) {
 		t.Fatalf("unexpected default translated.txt:\n%s", string(translatedBytes))
 	}
 
-	// Verify local ./config.json takes precedence over user config dir when present.
+	// Verify ./config.json in cwd does NOT override user config path; resolution is strict without fallback.
 	resolved, err := resolveConfigPath("", cliDeps{userConfigDir: func() (string, error) { return userCfgRoot, nil }})
 	if err != nil || resolved != userCfgPath {
-		t.Fatalf("expected user config fallback %q, got %q (err=%v)", userCfgPath, resolved, err)
+		t.Fatalf("expected user config path %q, got %q (err=%v)", userCfgPath, resolved, err)
 	}
 	if err := os.WriteFile(filepath.Join(workDir, "config.json"), cfgBytes, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	resolved, err = resolveConfigPath("", cliDeps{userConfigDir: func() (string, error) { return userCfgRoot, nil }})
-	if err != nil || resolved != "config.json" {
-		t.Fatalf("expected local config.json override, got %q (err=%v)", resolved, err)
+	if err != nil || resolved != userCfgPath {
+		t.Fatalf("expected strict user config path %q even with local config.json, got %q (err=%v)", userCfgPath, resolved, err)
+	}
+	// Missing explicit or default config fails directly without falling back to ./config.json.
+	if _, _, err := initConfigAndObserver(filepath.Join(workDir, "missing.json"), cliDeps{}); err == nil {
+		t.Fatal("expected error for missing explicit config path")
+	}
+	missingUserCfgRoot := filepath.Join(workDir, "empty-xdg-config")
+	if _, _, err := initConfigAndObserver("", cliDeps{userConfigDir: func() (string, error) { return missingUserCfgRoot, nil }}); err == nil {
+		t.Fatal("expected error when default user config file does not exist (no fallback to ./config.json)")
 	}
 }
 
@@ -697,6 +709,9 @@ func TestCLIScriptHashsum(t *testing.T) {
 		"<NAME_PLATE>新堂ミナト",
 		"「秋葉原へ行こう」",
 		"<VOICE>minato_01",
+		"<NAME_PLATE>新堂ミナト",
+		"（財布、",
+		"持ってるよな……）",
 		"",
 		"<NAME_PLATE>",
 		"夕方の教室。",
@@ -784,5 +799,207 @@ func TestCLIScriptHashsum(t *testing.T) {
 	}
 	if _, err := runHashsum("", "-i", filepath.Join(workDir, "missing.txt")); err == nil {
 		t.Fatal("expected error for missing input file")
+	}
+}
+
+func TestCLI_DefaultAllAndWhich(t *testing.T) {
+	workDir := t.TempDir()
+	fakeUserConfig := filepath.Join(workDir, "xdg-config")
+	wantUserConfigPath := filepath.Join(fakeUserConfig, "script-translator", "config.json")
+
+	t.Chdir(workDir)
+
+	runDefault := func(args ...string) (string, error) {
+		var out bytes.Buffer
+		cmd := newRootCmd(cliDeps{
+			stdin:         strings.NewReader(""),
+			stdout:        &out,
+			stderr:        &bytes.Buffer{},
+			stdinIsTTY:    func() bool { return true },
+			userConfigDir: func() (string, error) { return fakeUserConfig, nil },
+		})
+		cmd.SetArgs(append([]string{"default"}, args...))
+		err := cmd.Execute()
+		return out.String(), err
+	}
+
+	allOut, err := runDefault("all")
+	if err != nil {
+		t.Fatalf("default all failed: %v", err)
+	}
+	for _, want := range []string{
+		"CONFIG",
+		wantUserConfigPath,
+		"INPUT",
+		"script.txt",
+		"OUTPUT",
+		"translated.txt",
+		"CACHE_DIR",
+		"./cache",
+		"APIKEY_ENV",
+		"OPENAI_API_KEY",
+		"BATCH_SIZE",
+		"20",
+		"MAX_ATTEMPT",
+		"3",
+		"LOG_LEVEL",
+		"info",
+	} {
+		if !strings.Contains(allOut, want) {
+			t.Fatalf("expected %q in default all output, got:\n%s", want, allOut)
+		}
+	}
+
+	jsonOut, err := runDefault("all", "--json")
+	if err != nil {
+		t.Fatalf("default all --json failed: %v", err)
+	}
+	var report defaultReport
+	if err := json.Unmarshal([]byte(jsonOut), &report); err != nil {
+		t.Fatalf("unmarshal default all --json: %v", err)
+	}
+	if report.Config != wantUserConfigPath || report.APIKeyEnv != "OPENAI_API_KEY" || report.CacheDir != "./cache" {
+		t.Fatalf("unexpected defaultReport: %+v", report)
+	}
+
+	// `which` supports canonical keys, lowercase/hyphen normalization, and API_KEY_ENV alias.
+	for _, tc := range []struct {
+		arg  string
+		want string
+	}{
+		{arg: "CONFIG", want: wantUserConfigPath},
+		{arg: "config", want: wantUserConfigPath},
+		{arg: "APIKEY_ENV", want: "OPENAI_API_KEY"},
+		{arg: "api_key_env", want: "OPENAI_API_KEY"},
+		{arg: "cache-dir", want: "./cache"},
+		{arg: "BATCH_SIZE", want: "20"},
+	} {
+		got, err := runDefault("which", tc.arg)
+		if err != nil {
+			t.Fatalf("default which %q failed: %v", tc.arg, err)
+		}
+		if strings.TrimSpace(got) != tc.want {
+			t.Fatalf("default which %q = %q, want %q", tc.arg, strings.TrimSpace(got), tc.want)
+		}
+	}
+
+	// Even when ./config.json exists in cwd, CONFIG resolves strictly to user config path.
+	if err := os.WriteFile(filepath.Join(workDir, "config.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	localCfgOut, err := runDefault("which", "CONFIG")
+	if err != nil {
+		t.Fatalf("default which CONFIG with local config.json failed: %v", err)
+	}
+	if strings.TrimSpace(localCfgOut) != wantUserConfigPath {
+		t.Fatalf("expected CONFIG=%q without local fallback, got %q", wantUserConfigPath, localCfgOut)
+	}
+
+	// Unknown key returns clear error listing valid keys.
+	if _, err := runDefault("which", "NO_SUCH_KEY"); err == nil {
+		t.Fatal("expected error for unknown default key")
+	}
+}
+
+func TestCLIScriptExtractFallbackEmitsStderrWarning(t *testing.T) {
+	dir := t.TempDir()
+	cutScriptPath := filepath.Join(dir, "cut.txt")
+	if err := os.WriteFile(cutScriptPath, []byte("<NAME_PLATE>俺\n（コマンドで切れた\n<VOICE>v1\n<NAME_PLATE>俺\n残り）\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdoutBuf, stderrBuf bytes.Buffer
+	cmd := newRootCmd(cliDeps{
+		stdin:      strings.NewReader(""),
+		stdout:     &stdoutBuf,
+		stderr:     &stderrBuf,
+		stdinIsTTY: func() bool { return true },
+	})
+	cmd.SetArgs([]string{"script", "extract", "-i", cutScriptPath, "-o", "-"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("script extract fallback failed: %v", err)
+	}
+
+	var extracted model.ExtractedScript
+	if err := json.Unmarshal(stdoutBuf.Bytes(), &extracted); err != nil {
+		t.Fatalf("stdout should still contain clean JSON: %v\nstdout:\n%s", err, stdoutBuf.String())
+	}
+	if len(extracted.Dialogue) != 2 ||
+		extracted.Dialogue[0].Text != "（コマンドで切れた" ||
+		extracted.Dialogue[1].Text != "残り）" {
+		t.Fatalf("unexpected fallback dialogue units: %#v", extracted.Dialogue)
+	}
+	if !strings.Contains(stderrBuf.String(), "warning:") {
+		t.Fatalf("expected stderr warning for split dialogue block, got %q", stderrBuf.String())
+	}
+}
+
+func TestCLI_DefaultInit(t *testing.T) {
+	workDir := t.TempDir()
+	fakeUserConfig := filepath.Join(workDir, "xdg-config")
+	wantCfgPath := filepath.Join(fakeUserConfig, "script-translator", "config.json")
+
+	runInit := func(args ...string) (string, error) {
+		var out bytes.Buffer
+		cmd := newRootCmd(cliDeps{
+			stdin:         strings.NewReader(""),
+			stdout:        &out,
+			stderr:        &bytes.Buffer{},
+			stdinIsTTY:    func() bool { return true },
+			userConfigDir: func() (string, error) { return fakeUserConfig, nil },
+		})
+		cmd.SetArgs(append([]string{"default", "init"}, args...))
+		err := cmd.Execute()
+		return out.String(), err
+	}
+
+	out, err := runInit()
+	if err != nil {
+		t.Fatalf("default init failed: %v", err)
+	}
+	if !strings.Contains(out, wantCfgPath) {
+		t.Fatalf("expected output to mention %q, got %q", wantCfgPath, out)
+	}
+
+	raw, err := os.ReadFile(wantCfgPath)
+	if err != nil {
+		t.Fatalf("read initialized config: %v", err)
+	}
+	// Minimal file should omit optional defaults and stay concise.
+	if strings.Contains(string(raw), "observation") || strings.Contains(string(raw), "provider") {
+		t.Fatalf("expected minimal config template without optional blocks, got:\n%s", string(raw))
+	}
+
+	// Initialized config must pass config.Load and apply all defaults cleanly.
+	loaded, err := config.Load(wantCfgPath)
+	if err != nil {
+		t.Fatalf("config.Load on initialized config failed: %v", err)
+	}
+	if loaded.EntityRecognition.Model != defaultTemplateModel || loaded.Translation.Model != defaultTemplateModel {
+		t.Fatalf("unexpected template models: %+v", loaded)
+	}
+	if loaded.CacheDir != config.DefaultCacheDir || loaded.Provider.APIKeyEnv != config.DefaultAPIKeyEnv || !loaded.Observation.Log.Console.Enable {
+		t.Fatalf("expected default settings applied after Load: %+v", loaded)
+	}
+
+	// Re-running without --force refuses to overwrite customized file.
+	customContent := []byte("{\"custom\":true}\n")
+	if err := os.WriteFile(wantCfgPath, customContent, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runInit(); err == nil {
+		t.Fatal("expected error when config already exists without --force")
+	}
+	afterSkip, err := os.ReadFile(wantCfgPath)
+	if err != nil || string(afterSkip) != string(customContent) {
+		t.Fatalf("expected existing file untouched without --force, got %q (err=%v)", string(afterSkip), err)
+	}
+
+	// Passing --force overwrites with fresh minimal template.
+	if _, err := runInit("--force"); err != nil {
+		t.Fatalf("default init --force failed: %v", err)
+	}
+	if _, err := config.Load(wantCfgPath); err != nil {
+		t.Fatalf("config.Load after --force failed: %v", err)
 	}
 }

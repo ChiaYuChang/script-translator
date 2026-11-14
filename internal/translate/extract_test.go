@@ -50,10 +50,10 @@ func TestExtract(t *testing.T) {
 	}
 
 	want := []model.TranslateUnit{
-		{Index: 0, LineIndex: 2, Speaker: "A", Text: "AAAABBBB"},
-		{Index: 1, LineIndex: 2, Speaker: "A", Text: "CCCC"},
+		{Index: 0, LineIndex: 2, Speaker: "A", Text: "「AAAABBBB」"},
+		{Index: 1, LineIndex: 2, Speaker: "A", Text: "「CCCC」"},
 		{Index: 2, LineIndex: 8, Speaker: "", Text: "第一行。第二行。"},
-		{Index: 3, LineIndex: 12, Speaker: "B", Text: "DDD"},
+		{Index: 3, LineIndex: 12, Speaker: "B", Text: "「DDD」"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("translations mismatch:\ngot:  %#v\nwant: %#v", got, want)
@@ -79,7 +79,7 @@ func TestExtractEmptyLinesWithinDialogue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []model.TranslateUnit{{Index: 0, LineIndex: 0, Speaker: "A", Text: "AAABBB"}}
+	want := []model.TranslateUnit{{Index: 0, LineIndex: 0, Speaker: "A", Text: "「AAABBB」"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
 	}
@@ -95,12 +95,47 @@ func TestExtractNamePlateWithoutText(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []model.TranslateUnit{{Index: 0, LineIndex: 2, Speaker: "B", Text: "AAA"}}
+	want := []model.TranslateUnit{{Index: 0, LineIndex: 2, Speaker: "B", Text: "「AAA」"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
 	}
 	if len(retained) != 2 || retained[0].Order() != 0 || retained[1].Order() != 1 {
 		t.Errorf("unexpected retained: %#v", retained)
+	}
+}
+
+func TestExtractMonologueAndMixedBrackets(t *testing.T) {
+	const source = `<NAME_PLATE>俺
+（したいな……）
+<PAUSE>
+<NAME_PLATE>俺
+（多行にわたる
+モノローグもひとつに）
+<PAUSE>
+<NAME_PLATE>俺
+「XXXX（OO）XXX」
+（XXX「OO」）
+「彼は「うん」と言った」
+<PAUSE>
+`
+
+	got, retained, err := extractSource(t, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := []model.TranslateUnit{
+		{Index: 0, LineIndex: 0, Speaker: "俺", Text: "（したいな……）"},
+		{Index: 1, LineIndex: 3, Speaker: "俺", Text: "（多行にわたるモノローグもひとつに）"},
+		{Index: 2, LineIndex: 7, Speaker: "俺", Text: "「XXXX（OO）XXX」"},
+		{Index: 3, LineIndex: 7, Speaker: "俺", Text: "（XXX「OO」）"},
+		{Index: 4, LineIndex: 7, Speaker: "俺", Text: "「彼は「うん」と言った」"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("translations mismatch:\ngot:  %#v\nwant: %#v", got, want)
+	}
+	if len(retained) != 3 {
+		t.Fatalf("expected 3 retained <PAUSE> lines, got %d", len(retained))
 	}
 }
 
@@ -110,27 +145,75 @@ func TestExtractInvalidDialogue(t *testing.T) {
 		text   string
 		reason string
 	}{
-		{"missing opening", "AAA」", "no valid dialogue block"},
-		{"missing closing", "「AAA", "no valid dialogue block"},
-		{"empty dialogue", "「」", "no valid dialogue block"},
+		{"missing opening", "AAA」", "unexpected content before dialogue 1"},
+		{"missing closing", "「AAA", "unclosed dialogue block"},
+		{"empty dialogue", "「」", "empty dialogue block"},
+		{"empty monologue", "（）", "empty dialogue block"},
+		{"unclosed monologue", "（AAA", "unclosed dialogue block"},
+		{"missing opening monologue", "AAA）", "unexpected content before dialogue 1"},
+		{"mismatched closing", "「AAA）", "mismatched closing bracket"},
+		{"mismatched inner closing", "「AAA（BBB」", "mismatched closing bracket"},
 		{"leading text", "XYZ「AAA」", "unexpected content before dialogue 1"},
 		{"text between blocks", "「AAA」XYZ「BBB」", "unexpected content before dialogue 2"},
-		{"trailing text", "「AAA」XYZ", "unexpected trailing content"},
-		{"unclosed second block", "「AAA」「BBB", "unexpected trailing content"},
-		{"nested opening quote", "「AAA「BBB」", "unexpected content before dialogue 1"},
+		{"trailing text", "「AAA」XYZ", "unexpected content before dialogue 2"},
+		{"unclosed second block", "「AAA」「BBB", "unclosed dialogue block"},
+		{"unclosed nested quote", "「AAA「BBB」", "unclosed dialogue block"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			source := "<NAME_PLATE>A\n" + tt.text + "\n<PAUSE>\n"
-			_, _, err := extractSource(t, source)
-			if !errors.Is(err, ErrInvalidDialogueFormat) {
-				t.Fatalf("expected ErrInvalidDialogueFormat, got %v", err)
+			if _, err := extractDialogue(tt.text); !errors.Is(err, ErrInvalidDialogueFormat) || !strings.Contains(err.Error(), tt.reason) {
+				t.Fatalf("extractDialogue(%q) expected ErrInvalidDialogueFormat containing %q, got %v", tt.text, tt.reason, err)
 			}
-			if !strings.Contains(err.Error(), "line 0:") || !strings.Contains(err.Error(), tt.reason) {
-				t.Errorf("error lacks line or reason: %v", err)
+
+			// ExtractWithWarnings falls back to keeping the entire block as 1 unit and emits a warning.
+			script, err := ParseBytes([]byte("<NAME_PLATE>A\n" + tt.text + "\n<PAUSE>\n"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			units, _, warnings, err := ExtractWithWarnings(script)
+			if err != nil {
+				t.Fatalf("expected fallback extraction to succeed, got %v", err)
+			}
+			wantUnit := []model.TranslateUnit{{Index: 0, LineIndex: 0, Speaker: "A", Text: tt.text}}
+			if !reflect.DeepEqual(units, wantUnit) {
+				t.Fatalf("fallback units mismatch: got %#v, want %#v", units, wantUnit)
+			}
+			if len(warnings) != 1 || !strings.Contains(warnings[0], "line 0") || !strings.Contains(warnings[0], tt.reason) {
+				t.Fatalf("expected warning mentioning line 0 and %q, got %#v", tt.reason, warnings)
 			}
 		})
+	}
+}
+
+func TestExtractSplitAcrossCommandEmitsWarningAndKeepsUnits(t *testing.T) {
+	const source = `<NAME_PLATE>俺
+（前半がコマンドで切られた……
+<VOICE>vo_001
+<NAME_PLATE>俺
+後半部分）
+<PAUSE>
+`
+	script, err := ParseBytes([]byte(source))
+	if err != nil {
+		t.Fatal(err)
+	}
+	units, retained, warnings, err := ExtractWithWarnings(script)
+	if err != nil {
+		t.Fatalf("ExtractWithWarnings failed: %v", err)
+	}
+	wantUnits := []model.TranslateUnit{
+		{Index: 0, LineIndex: 0, Speaker: "俺", Text: "（前半がコマンドで切られた……"},
+		{Index: 1, LineIndex: 3, Speaker: "俺", Text: "後半部分）"},
+	}
+	if !reflect.DeepEqual(units, wantUnits) {
+		t.Fatalf("units mismatch:\ngot:  %#v\nwant: %#v", units, wantUnits)
+	}
+	if len(warnings) != 2 {
+		t.Fatalf("expected 2 fallback warnings, got %#v", warnings)
+	}
+	if len(retained) != 2 || retained[0].String() != "<VOICE>vo_001\n" {
+		t.Fatalf("unexpected retained units: %#v", retained)
 	}
 }
 

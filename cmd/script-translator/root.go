@@ -27,7 +27,7 @@ const (
 	appName             = "script-translator"
 	defaultInputPath    = "script.txt"
 	defaultOutputPath   = "translated.txt"
-	configFlagUsage     = "Path to config JSON file (default: ./config.json if present, else ~/.config/script-translator/config.json)"
+	configFlagUsage     = "Path to config JSON file (default: ~/.config/script-translator/config.json)"
 	localConfigFilename = "config.json"
 )
 
@@ -80,6 +80,7 @@ func newRootCmd(deps cliDeps) *cobra.Command {
 
 	root.AddCommand(newScriptCmd(deps))
 	root.AddCommand(newEntityCmd(deps))
+	root.AddCommand(newDefaultCmd(deps))
 	root.AddCommand(newVersionCmd(deps))
 	return root
 }
@@ -98,9 +99,6 @@ func newVersionCmd(deps cliDeps) *cobra.Command {
 func resolveConfigPath(explicit string, deps cliDeps) (string, error) {
 	if p := strings.TrimSpace(explicit); p != "" {
 		return p, nil
-	}
-	if info, err := os.Stat(localConfigFilename); err == nil && !info.IsDir() {
-		return localConfigFilename, nil
 	}
 	getDir := deps.userConfigDir
 	if getDir == nil {

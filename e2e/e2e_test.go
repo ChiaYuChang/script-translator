@@ -191,6 +191,9 @@ func TestEndToEndPipeline(t *testing.T) {
 			t.Fatalf("translated script missing %q:\n%s", wantSnippet, translatedText)
 		}
 	}
+	if !strings.Contains(translatedText, "「") || !strings.Contains(translatedText, "（") || !strings.Contains(translatedText, "）") {
+		t.Fatalf("translated script should preserve both spoken 「」 and monologue （） wrappers:\n%s", translatedText)
+	}
 
 	// 3. Entity insert & list verification.
 	runCLI(t, binPath, repoRoot, extraEnv, nil,
@@ -281,6 +284,7 @@ func assertVer2ScriptOutput(t *testing.T, text string) {
 		"<SE_PLAY>se_footsteps",
 		"<WAIT>500",
 		"<VOICE_PLAY>vo_yui_002_split",
+		"<VOICE_PLAY>vo_minato_mono_01",
 		"<NAME_PLATE>新堂湊",
 		"<NAME_PLATE>朝倉由依",
 		"// trailing comment in ver2",
@@ -289,6 +293,9 @@ func assertVer2ScriptOutput(t *testing.T, text string) {
 		if !strings.Contains(text, wantSnippet) {
 			t.Fatalf("ver2 assembled script missing %q:\n%s", wantSnippet, text)
 		}
+	}
+	if !strings.Contains(text, "「") || !strings.Contains(text, "（") || !strings.Contains(text, "）") {
+		t.Fatalf("ver2 script should preserve both spoken 「」 and monologue （） wrappers:\n%s", text)
 	}
 	if strings.Contains(text, "<EFFECT_FLASH>") {
 		t.Fatalf("ver2 assembled script should not contain removed ver1 tag <EFFECT_FLASH>:\n%s", text)

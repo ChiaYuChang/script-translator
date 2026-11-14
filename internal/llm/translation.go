@@ -69,7 +69,7 @@ Rules:
 - Each "text" must be a non-empty Traditional Chinese string.
 - Use the mappings in "Entries:" consistently. Do not independently reinterpret existing translated names.
 - Preserve placeholders, variable references, markup, control codes, file paths, URLs, and other technical literals appearing inside the source text.
-- Do not add outer Japanese dialogue quotation marks 「」 or script commands such as <NAME_PLATE>. The application reconstructs these elements.
+- Preserve outer Japanese dialogue quotation marks 「...」 or monologue parentheses （...） exactly when present in the source "text" (return 「...」 for 「...」, full-width （...） for （...）, never convert （） to half-width (), and never wrap unbracketed narration/OS lines in 「」). Do not output script commands such as <NAME_PLATE>.
 - Do not include "name", "entity", explanations, markdown, or any fields outside the specified output schema.
 
 EXAMPLE INPUT
@@ -80,19 +80,19 @@ Entries:
 - 朝倉ユイ: 朝倉由依
 
 History:
-朝倉ユイ:早安！今天天氣真好。
+朝倉ユイ:「早安！今天天氣真好。」
 
 Input:
 [
   {
     "index": 0,
     "name": "新堂ミナト",
-    "text": "おはよう、ユイ。"
+    "text": "「おはよう、ユイ。」"
   },
   {
     "index": 1,
     "name": "新堂ミナト",
-    "text": "今日は一緒に帰ろうか。"
+    "text": "（今日は誘ってみようかな……）"
   },
   {
     "index": 2,
@@ -107,11 +107,11 @@ EXAMPLE OUTPUT
   "dialogue": [
     {
       "index": 0,
-      "text": "早安，由依。"
+      "text": "「早安，由依。」"
     },
     {
       "index": 1,
-      "text": "今天要不要一起回家？"
+      "text": "（今天試著約她看看好了……）"
     },
     {
       "index": 2,
@@ -357,7 +357,29 @@ func parseAndValidateTranslationBatch(
 		if !ok {
 			return nil, fmt.Errorf("missing index %d", unit.Index)
 		}
+		if err := validateMatchingOuterDelimiters(unit.Text, item.Text); err != nil {
+			return nil, fmt.Errorf("index %d: %w", unit.Index, err)
+		}
 		ordered = append(ordered, item)
 	}
 	return ordered, nil
+}
+
+func validateMatchingOuterDelimiters(source, translated string) error {
+	trimmedSrc := strings.TrimSpace(source)
+	trimmedDst := strings.TrimSpace(translated)
+	for _, pair := range [][2]string{{"「", "」"}, {"（", "）"}} {
+		openMark, closeMark := pair[0], pair[1]
+		if strings.HasPrefix(trimmedSrc, openMark) && strings.HasSuffix(trimmedSrc, closeMark) {
+			if !strings.HasPrefix(trimmedDst, openMark) || !strings.HasSuffix(trimmedDst, closeMark) {
+				return fmt.Errorf("must preserve outer %s%s wrapper", openMark, closeMark)
+			}
+			inner := strings.TrimSuffix(strings.TrimPrefix(trimmedDst, openMark), closeMark)
+			if strings.TrimSpace(inner) == "" {
+				return fmt.Errorf("empty content inside outer %s%s", openMark, closeMark)
+			}
+			return nil
+		}
+	}
+	return nil
 }

@@ -61,9 +61,14 @@ func newScriptExtractCmd(deps cliDeps) *cobra.Command {
 			if inputLabel == "-" {
 				inputLabel = ""
 			}
-			extracted, err := translate.ExtractScript(inputLabel, parsed)
+			extracted, warnings, err := translate.ExtractScriptWithWarnings(inputLabel, parsed)
 			if err != nil {
 				return err
+			}
+			for _, w := range warnings {
+				if _, werr := fmt.Fprintf(deps.stderr, "warning: %s\n", w); werr != nil {
+					return werr
+				}
 			}
 
 			outBytes, err := marshalIndentedLine(extracted)
@@ -601,7 +606,16 @@ func loadScriptSource(inPath string, deps cliDeps) (model.ExtractedScript, error
 	if inputLabel == "-" {
 		inputLabel = ""
 	}
-	return translate.ExtractScript(inputLabel, parsed)
+	extracted, warnings, err := translate.ExtractScriptWithWarnings(inputLabel, parsed)
+	if err != nil {
+		return model.ExtractedScript{}, err
+	}
+	for _, w := range warnings {
+		if _, werr := fmt.Fprintf(deps.stderr, "warning: %s\n", w); werr != nil {
+			return model.ExtractedScript{}, werr
+		}
+	}
+	return extracted, nil
 }
 
 func loadReadOnlyDict(dictPath string) (model.EntityMapping, error) {

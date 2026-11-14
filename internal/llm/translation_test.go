@@ -694,6 +694,85 @@ func TestTranslateRejectsMissingIndexEvenWhenInputIsZero(t *testing.T) {
 	}
 }
 
+func TestTranslateRejectsMismatchedOuterDelimitersAndRetries(t *testing.T) {
+	cases := []struct {
+		name       string
+		sourceText string
+		badText    string
+		goodText   string
+		wantErrSub string
+	}{
+		{
+			name:       "dropped dialogue quotes triggers retry",
+			sourceText: "「おはよう」",
+			badText:    "早安",
+			goodText:   "「早安」",
+			wantErrSub: "must preserve outer 「」 wrapper",
+		},
+		{
+			name:       "half-width monologue parens rejected",
+			sourceText: "（したいな……）",
+			badText:    "(好想做啊……)",
+			goodText:   "（好想做啊……）",
+			wantErrSub: "must preserve outer （） wrapper",
+		},
+		{
+			name:       "empty inner monologue rejected",
+			sourceText: "（したいな……）",
+			badText:    "（   ）",
+			goodText:   "（好想做啊……）",
+			wantErrSub: "empty content inside outer （）",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls atomic.Int32
+			p := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+				txt := tc.badText
+				if calls.Add(1) > 1 {
+					txt = tc.goodText
+				}
+				writeJSONResponse(t, w, "completed", map[string]any{
+					"type": "output_text",
+					"text": mustMarshalJSON(t, translationOutput{
+						Dialogue: model.TranslateBatchOutput{{Index: 0, Text: txt}},
+					}),
+				})
+			})
+
+			req := model.TranslateRequest{
+				Dialogue: []model.TranslateUnit{
+					{Index: 0, LineIndex: 1, Speaker: "俺", Text: tc.sourceText},
+				},
+			}
+
+			// First verify MaxAttempt=1 surfaces the exact validation error.
+			if _, err := p.Translate(context.Background(), req, TranslateParams{
+				Model:      "gpt-test",
+				BatchSize:  1,
+				MaxAttempt: 1,
+			}); err == nil || !strings.Contains(err.Error(), tc.wantErrSub) {
+				t.Fatalf("expected error containing %q, got %v", tc.wantErrSub, err)
+			}
+
+			// Reset and verify MaxAttempt=2 recovers on retry.
+			calls.Store(0)
+			got, err := p.Translate(context.Background(), req, TranslateParams{
+				Model:      "gpt-test",
+				BatchSize:  1,
+				MaxAttempt: 2,
+			})
+			if err != nil {
+				t.Fatalf("expected retry to recover, got %v", err)
+			}
+			if len(got) != 1 || got[0].Text != tc.goodText {
+				t.Fatalf("unexpected retry output: %#v", got)
+			}
+		})
+	}
+}
+
 func TestTranslationSchema(t *testing.T) {
 	schemaMap, err := ToSchemaMap(translationSchema)
 	if err != nil {

@@ -6,7 +6,7 @@ import "strings"
 // Index is the 0-based sequential utterance index across the script (stable across
 // metadata edits); LineIndex is the 0-based source line number of its owning <NAME_PLATE>.
 // An empty Speaker means OS (narration).
-// Text does not contain <NAME_PLATE> or outer Japanese quotation marks.
+// Text preserves outer Japanese dialogue quotes (「...」) or monologue parentheses (（...）) when present.
 type TranslateUnit struct {
 	Index     int    `json:"index"`
 	LineIndex int    `json:"line_index"`
@@ -100,13 +100,7 @@ func (u TranslatedUnit) String() string {
 	b.WriteByte('\n')
 
 	for _, text := range u.Text {
-		if u.Speaker != "" {
-			b.WriteString("「")
-			b.WriteString(text)
-			b.WriteString("」")
-		} else {
-			b.WriteString(text)
-		}
+		b.WriteString(text)
 		b.WriteByte('\n')
 	}
 	return b.String()

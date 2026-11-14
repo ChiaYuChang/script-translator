@@ -18,7 +18,8 @@ func TestTranscriptHashsumIgnoresMetadata(t *testing.T) {
 		"<NAME_PLATE>新堂ミナト",
 		"「それは言わないで。",
 		"　時計を見るたびに」",
-		"「時間が止まってる気がするんだ」",
+		"（早く帰りたいな……",
+		"　まだ続くのか）",
 		"<PAUSE>",
 	}, "\n") + "\n"
 
@@ -38,7 +39,7 @@ func TestTranscriptHashsumIgnoresMetadata(t *testing.T) {
 		"　時計を見るたびに」\r",
 		"<VOICE>minato_001\r",
 		"<NAME_PLATE>新堂ミナト\r",
-		"「時間が止まってる気がするんだ」\r",
+		"（早く帰りたいな……まだ続くのか）\r",
 		"// trailing note\r",
 	}, "\n")
 
@@ -64,7 +65,7 @@ func TestTranscriptHashsumIgnoresMetadata(t *testing.T) {
 		t.Fatalf("expected matching hashsums when only metadata differs:\nbase:    %s\nvariant: %s", baseSum, variantSum)
 	}
 
-	wantTranscript := "OS:昼休みの少し前。\n新堂ミナト:それは言わないで。時計を見るたびに\n新堂ミナト:時間が止まってる気がするんだ"
+	wantTranscript := "OS:昼休みの少し前。\n新堂ミナト:「それは言わないで。時計を見るたびに」\n新堂ミナト:（早く帰りたいな……まだ続くのか）"
 	rawSum := sha256.Sum256([]byte(wantTranscript))
 	wantHex := hex.EncodeToString(rawSum[:])
 	if baseSum != wantHex {
@@ -76,16 +77,21 @@ func TestTranscriptHashsumDetectsContentChanges(t *testing.T) {
 	a := "<NAME_PLATE>新堂ミナト\n「おはよう」\n"
 	b := "<NAME_PLATE>新堂ミナト\n「こんにちは」\n"
 	c := "<NAME_PLATE>朝倉ユイ\n「おはよう」\n"
+	d := "<NAME_PLATE>新堂ミナト\n（おはよう）\n"
 
 	sumA := mustHashsum(t, a)
 	sumB := mustHashsum(t, b)
 	sumC := mustHashsum(t, c)
+	sumD := mustHashsum(t, d)
 
 	if sumA == sumB {
 		t.Fatalf("expected different hashsum when dialogue text changes: %s", sumA)
 	}
 	if sumA == sumC {
 		t.Fatalf("expected different hashsum when speaker changes: %s", sumA)
+	}
+	if sumA == sumD {
+		t.Fatalf("expected different hashsum when spoken vs monologue delimiter changes: %s", sumA)
 	}
 }
 
