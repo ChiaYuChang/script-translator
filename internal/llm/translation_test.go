@@ -914,6 +914,13 @@ func TestProviderRecordsMetricsAndLogsAcrossRetries(t *testing.T) {
 		if event["run_id"] != runID {
 			t.Fatalf("metric line %d run_id = %v, want %q", i, event["run_id"], runID)
 		}
+		if event["type"] == observation.MetricTypeTranslationBatchUsage {
+			if event["batch"] != float64(1) || event["total_batch"] != float64(1) {
+				t.Fatalf("expected batch=1, total_batch=1 on translation metric line %d, got batch=%v total_batch=%v", i, event["batch"], event["total_batch"])
+			}
+		} else if _, hasTotalBatch := event["total_batch"]; hasTotalBatch {
+			t.Fatalf("unexpected total_batch on non-batch metric line %d (%v)", i, event["type"])
+		}
 	}
 
 	report := metrics.Snapshot()
@@ -932,7 +939,7 @@ func TestProviderRecordsMetricsAndLogsAcrossRetries(t *testing.T) {
 	if len(logLines) != 3 {
 		t.Fatalf("expected 3 JSON log lines (1 recognize ok, 1 retry warn, 1 translate ok), got %d:\n%s", len(logLines), logBuf.String())
 	}
-	for _, line := range logLines {
+	for i, line := range logLines {
 		var entry map[string]any
 		if err := json.Unmarshal([]byte(line), &entry); err != nil {
 			t.Fatalf("invalid JSON log line %q: %v", line, err)
@@ -942,6 +949,9 @@ func TestProviderRecordsMetricsAndLogsAcrossRetries(t *testing.T) {
 		}
 		if entry["time"] == "" || entry["time"] == nil {
 			t.Fatalf("expected timestamp in log entry: %#v", entry)
+		}
+		if i > 0 && (entry["batch"] != float64(1) || entry["total_batch"] != float64(1)) {
+			t.Fatalf("expected batch=1 and total_batch=1 on translation log line %d, got: %#v", i, entry)
 		}
 	}
 }

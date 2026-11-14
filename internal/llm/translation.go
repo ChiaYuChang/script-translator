@@ -146,6 +146,15 @@ type TranslateParams struct {
 	MaxAttempt int    `json:"max_attempt" jsonschema:"Maximum attempts per translation batch"`
 }
 
+// TotalBatches returns the number of sequential translation batches needed for
+// unitCount dialogue units at the given batchSize.
+func TotalBatches(unitCount, batchSize int) int {
+	if unitCount <= 0 || batchSize <= 0 {
+		return 0
+	}
+	return (unitCount + batchSize - 1) / batchSize
+}
+
 // Translate translates dialogue units sequentially in batches of param.BatchSize,
 // passing Entities and a compact transcript of previously translated lines per batch.
 func (p *Provider) Translate(
@@ -187,6 +196,7 @@ func (p *Provider) Translate(
 		speaker[i] = req.Dialogue[i].Speaker
 	}
 
+	totalBatches := TotalBatches(len(req.Dialogue), param.BatchSize)
 	translated := make(model.TranslateResponse, 0, len(req.Dialogue))
 	for start, batchNum := 0, 1; start < len(req.Dialogue); start, batchNum = start+param.BatchSize, batchNum+1 {
 		end := min(start+param.BatchSize, len(req.Dialogue))
@@ -201,7 +211,7 @@ func (p *Provider) Translate(
 		}
 		batchInput, err := json.Marshal(wireUnits)
 		if err != nil {
-			return nil, fmt.Errorf("translation: batch %d: marshal input: %w", batchNum, err)
+			return nil, fmt.Errorf("translation: batch %d/%d: marshal input: %w", batchNum, totalBatches, err)
 		}
 
 		batchPrompt := formatTranslationQuery(entriesSection, speaker, translated, batchInput)
@@ -209,27 +219,28 @@ func (p *Provider) Translate(
 		var lastErr error
 		for attempt := 0; attempt < param.MaxAttempt; attempt++ {
 			if err := ctx.Err(); err != nil {
-				return nil, fmt.Errorf("translation: batch %d: %w", batchNum, err)
+				return nil, fmt.Errorf("translation: batch %d/%d: %w", batchNum, totalBatches, err)
 			}
 
-			batchResult, lastErr = p.doTranslateBatchOnce(ctx, param.Model, schema, resolved, batchPrompt, req.Dialogue[start:end], batchNum, attempt+1)
+			batchResult, lastErr = p.doTranslateBatchOnce(ctx, param.Model, schema, resolved, batchPrompt, req.Dialogue[start:end], batchNum, totalBatches, attempt+1)
 			if lastErr == nil {
 				break
 			}
 			if errors.Is(lastErr, context.Canceled) || errors.Is(lastErr, context.DeadlineExceeded) {
-				return nil, fmt.Errorf("translation: batch %d: %w", batchNum, lastErr)
+				return nil, fmt.Errorf("translation: batch %d/%d: %w", batchNum, totalBatches, lastErr)
 			}
 			p.log().WarnContext(
 				ctx,
 				"translation batch attempt failed",
 				slog.Int("batch", batchNum),
+				slog.Int("total_batch", totalBatches),
 				slog.Int("attempt", attempt+1),
 				slog.Int("max_attempt", param.MaxAttempt),
 				slog.Any("error", lastErr),
 			)
 		}
 		if lastErr != nil {
-			return nil, fmt.Errorf("translation: batch %d failed after %d attempts: %w", batchNum, param.MaxAttempt, lastErr)
+			return nil, fmt.Errorf("translation: batch %d/%d failed after %d attempts: %w", batchNum, totalBatches, param.MaxAttempt, lastErr)
 		}
 
 		translated = append(translated, batchResult...)
@@ -282,12 +293,13 @@ func (p *Provider) doTranslateBatchOnce(
 	userPrompt string,
 	batch []model.TranslateUnit,
 	batchNum int,
+	totalBatch int,
 	attempt int,
 ) (result []model.TranslatedText, err error) {
 	started := time.Now()
 	var usage observation.TokenUsage
 	defer func() {
-		p.recordAttempt(ctx, observation.MetricTypeTranslationBatchUsage, modelName, batchNum, attempt, started, usage, err)
+		p.recordAttempt(ctx, observation.MetricTypeTranslationBatchUsage, modelName, batchNum, totalBatch, attempt, started, usage, err)
 	}()
 
 	resp, err := p.client.Responses.New(ctx, responses.ResponseNewParams{

@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"go-script-translate/internal/entitystore"
+	"go-script-translate/internal/llm"
 	"go-script-translate/internal/model"
 	"go-script-translate/internal/translate"
 )
@@ -268,6 +269,7 @@ func newScriptTranslateCmd(deps cliDeps) *cobra.Command {
 				slog.String("input", inPath),
 				slog.String("hashsum", extracted.Hashsum),
 				slog.Int("dialogue_units", len(extracted.Dialogue)),
+				slog.Int("total_batch", llm.TotalBatches(len(extracted.Dialogue), cfg.Translation.BatchSize)),
 				slog.Int("entities", len(entities)),
 			)
 
@@ -518,6 +520,7 @@ func newScriptRunCmd(deps cliDeps) *cobra.Command {
 					slog.String("input", resolvedIn),
 					slog.String("hashsum", extracted.Hashsum),
 					slog.Int("dialogue_units", len(extracted.Dialogue)),
+					slog.Int("total_batch", llm.TotalBatches(len(extracted.Dialogue), cfg.Translation.BatchSize)),
 					slog.Int("entities", len(effectiveEntities)),
 				)
 

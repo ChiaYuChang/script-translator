@@ -250,7 +250,7 @@ func (p *Provider) doRecognizeEntitiesOnce(
 	started := time.Now()
 	var usage observation.TokenUsage
 	defer func() {
-		p.recordAttempt(ctx, observation.MetricTypeEntityUsage, modelName, 0, attempt, started, usage, err)
+		p.recordAttempt(ctx, observation.MetricTypeEntityUsage, modelName, 0, 0, attempt, started, usage, err)
 	}()
 
 	resp, err := p.client.Responses.New(ctx, responses.ResponseNewParams{

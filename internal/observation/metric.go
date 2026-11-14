@@ -43,6 +43,7 @@ type CallMetric struct {
 	Timestamp  time.Time  `json:"timestamp"`
 	Model      string     `json:"model"`
 	Batch      int        `json:"batch,omitzero"`
+	TotalBatch int        `json:"total_batch,omitzero"`
 	Attempt    int        `json:"attempt"`
 	Status     string     `json:"status"`
 	DurationMS int64      `json:"duration_ms"`

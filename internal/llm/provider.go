@@ -57,6 +57,7 @@ func (p *Provider) recordAttempt(
 	metricType string,
 	modelName string,
 	batch int,
+	totalBatch int,
 	attempt int,
 	started time.Time,
 	usage observation.TokenUsage,
@@ -67,6 +68,7 @@ func (p *Provider) recordAttempt(
 		Type:       metricType,
 		Model:      modelName,
 		Batch:      batch,
+		TotalBatch: totalBatch,
 		Attempt:    attempt,
 		Status:     "ok",
 		DurationMS: durationMS,
@@ -92,6 +94,9 @@ func (p *Provider) recordAttempt(
 		}
 		if batch > 0 {
 			attrs = append(attrs, slog.Int("batch", batch))
+			if totalBatch > 0 {
+				attrs = append(attrs, slog.Int("total_batch", totalBatch))
+			}
 		}
 		p.log().InfoContext(ctx, "llm request completed", attrs...)
 	}

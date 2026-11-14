@@ -61,6 +61,7 @@ func TestInitConsoleFileLoggerAndStreamingJSONLMetrics(t *testing.T) {
 		Type:       MetricTypeTranslationBatchUsage,
 		Model:      "gpt-test",
 		Batch:      1,
+		TotalBatch: 3,
 		Attempt:    1,
 		Status:     "error",
 		DurationMS: 50,
@@ -86,6 +87,7 @@ func TestInitConsoleFileLoggerAndStreamingJSONLMetrics(t *testing.T) {
 		Type:       MetricTypeTranslationBatchUsage,
 		Model:      "gpt-test",
 		Batch:      1,
+		TotalBatch: 3,
 		Attempt:    2,
 		Status:     "ok",
 		DurationMS: 80,
@@ -167,8 +169,10 @@ func TestInitConsoleFileLoggerAndStreamingJSONLMetrics(t *testing.T) {
 	}
 	if calls[0].Type != MetricTypeEntityUsage ||
 		calls[1].Type != MetricTypeTranslationBatchUsage ||
-		calls[2].Type != MetricTypeTranslationBatchUsage {
-		t.Fatalf("unexpected call types: %#v", calls)
+		calls[2].Type != MetricTypeTranslationBatchUsage ||
+		calls[1].TotalBatch != 3 ||
+		calls[2].TotalBatch != 3 {
+		t.Fatalf("unexpected call types/total_batch: %#v", calls)
 	}
 
 	var total TotalMetric
