@@ -35,8 +35,8 @@ func TestEndToEndPipeline(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	binPath := filepath.Join(t.TempDir(), "translate")
-	buildCmd := exec.Command("go", "build", "-o", binPath, "./cmd/translate")
+	binPath := filepath.Join(t.TempDir(), "script-translator")
+	buildCmd := exec.Command("go", "build", "-o", binPath, "./cmd/script-translator")
 	buildCmd.Dir = repoRoot
 	if out, err := buildCmd.CombinedOutput(); err != nil {
 		t.Fatalf("build CLI binary: %v\n%s", err, string(out))
@@ -174,6 +174,7 @@ func TestEndToEndPipeline(t *testing.T) {
 		pipeOut := runCLI(t, binPath, repoRoot, extraEnv, bytes.NewReader(recBytes),
 			"pipeline", "translate",
 			"-c", trConfigPath,
+			"-o", "-",
 		)
 		if pipeOut != translatedText {
 			t.Fatalf("piped translate output differed from file-based translate")

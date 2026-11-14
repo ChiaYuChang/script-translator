@@ -2,8 +2,11 @@ version: '3'
 
 dotenv: ['.env']
 
+env:
+  VERSION: v0.1.0
+
 vars:
-  BIN: ./bin/translate
+  BIN: ./bin/script-translator
   SCRIPT: e2e/data/e2e_scene.txt
   SEED_DICT: e2e/data/seed_entities.json
   DICT: e2e/entity/entity_dict.json
@@ -13,10 +16,10 @@ vars:
 
 tasks:
   build:
-    desc: Build the translate CLI binary
+    desc: Build the script-translator CLI binary
     cmds:
       - mkdir -p bin
-      - go build -o {{.BIN}} ./cmd/translate
+      - go build -ldflags "-X main.version=${VERSION:-dev}" -o {{.BIN}} ./cmd/script-translator
 
   test:
     desc: Run unit and fixture-backed E2E tests plus go vet

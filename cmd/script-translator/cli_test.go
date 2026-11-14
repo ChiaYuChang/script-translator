@@ -323,6 +323,7 @@ func TestPipelineTranslateStandaloneWithDictEvenWhenNonTTYStdin(t *testing.T) {
 		"-c", cfgPath,
 		"-i", scriptPath,
 		"-d", dictPath,
+		"-o", "-",
 	})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("standalone translate with --dict failed: %v", err)
@@ -369,5 +370,82 @@ func TestEntityInsertInlineAndListText(t *testing.T) {
 	}
 	if !strings.Contains(listOut.String(), "#1") || !strings.Contains(listOut.String(), "- 朝倉ユイ: 朝倉由依") {
 		t.Fatalf("unexpected entity list text output:\n%s", listOut.String())
+	}
+}
+
+func TestVersionAndDefaultPaths(t *testing.T) {
+	// Verify default version output via both `version` command and `--version`.
+	var verOut bytes.Buffer
+	verCmd := newRootCmd(cliDeps{
+		stdin:      &bytes.Buffer{},
+		stdout:     &verOut,
+		stderr:     &bytes.Buffer{},
+		stdinIsTTY: func() bool { return true },
+	})
+	verCmd.SetArgs([]string{"version"})
+	if err := verCmd.Execute(); err != nil {
+		t.Fatalf("version subcommand failed: %v", err)
+	}
+	if !strings.Contains(verOut.String(), "script-translator version "+version) {
+		t.Fatalf("unexpected version output: %q", verOut.String())
+	}
+
+	// Verify fallback to <userConfigDir>/script-translator/config.json and default
+	// script.txt -> translated.txt when no -c/-i/-o flags are supplied.
+	workDir := t.TempDir()
+	userCfgRoot := t.TempDir()
+	appCfgDir := filepath.Join(userCfgRoot, appName)
+	if err := os.MkdirAll(appCfgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := writeMockResponsesServer(t)
+	defer srv.Close()
+
+	writeTestScript(t, workDir) // creates script.txt in workDir
+	tmpCfg := writeTestConfig(t, t.TempDir(), srv.URL+"/v1", filepath.Join(workDir, "log.jsonl"), filepath.Join(workDir, "metric.jsonl"))
+	cfgBytes, err := os.ReadFile(tmpCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	userCfgPath := filepath.Join(appCfgDir, "config.json")
+	if err := os.WriteFile(userCfgPath, cfgBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Chdir(workDir)
+
+	var pipeOut, errBuf bytes.Buffer
+	cmd := newRootCmd(cliDeps{
+		stdin:         &bytes.Buffer{},
+		stdout:        &pipeOut,
+		stderr:        &errBuf,
+		stdinIsTTY:    func() bool { return true },
+		userConfigDir: func() (string, error) { return userCfgRoot, nil },
+	})
+	cmd.SetArgs([]string{"pipeline", "translate"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("default pipeline translate failed: %v\nstderr:\n%s", err, errBuf.String())
+	}
+
+	translatedBytes, err := os.ReadFile(filepath.Join(workDir, "translated.txt"))
+	if err != nil {
+		t.Fatalf("expected default translated.txt output: %v", err)
+	}
+	if !strings.Contains(string(translatedBytes), "去秋葉原吧") {
+		t.Fatalf("unexpected default translated.txt:\n%s", string(translatedBytes))
+	}
+
+	// Verify local ./config.json takes precedence over user config dir when present.
+	resolved, err := resolveConfigPath("", cliDeps{userConfigDir: func() (string, error) { return userCfgRoot, nil }})
+	if err != nil || resolved != userCfgPath {
+		t.Fatalf("expected user config fallback %q, got %q (err=%v)", userCfgPath, resolved, err)
+	}
+	if err := os.WriteFile(filepath.Join(workDir, "config.json"), cfgBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err = resolveConfigPath("", cliDeps{userConfigDir: func() (string, error) { return userCfgRoot, nil }})
+	if err != nil || resolved != "config.json" {
+		t.Fatalf("expected local config.json override, got %q (err=%v)", resolved, err)
 	}
 }

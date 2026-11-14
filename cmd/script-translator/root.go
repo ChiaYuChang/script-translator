@@ -23,7 +23,16 @@ import (
 	"go-script-translate/internal/observation"
 )
 
-const defaultConfigPath = "config.json"
+const (
+	appName             = "script-translator"
+	defaultInputPath    = "script.txt"
+	defaultOutputPath   = "translated.txt"
+	configFlagUsage     = "Path to config JSON file (default: ./config.json if present, else ~/.config/script-translator/config.json)"
+	localConfigFilename = "config.json"
+)
+
+// version is overridden at build time via `-ldflags "-X main.version=..."`.
+var version = "dev"
 
 // recognizePayload is the JSON schema exchanged between `pipeline recognize`,
 // `pipeline translate`, and `entity insert` over files or Unix pipes.
@@ -33,10 +42,11 @@ type recognizePayload struct {
 }
 
 type cliDeps struct {
-	stdin      io.Reader
-	stdout     io.Writer
-	stderr     io.Writer
-	stdinIsTTY func() bool
+	stdin         io.Reader
+	stdout        io.Writer
+	stderr        io.Writer
+	stdinIsTTY    func() bool
+	userConfigDir func() (string, error)
 }
 
 func defaultCLIDeps() cliDeps {
@@ -51,13 +61,15 @@ func defaultCLIDeps() cliDeps {
 			}
 			return info.Mode()&os.ModeCharDevice != 0
 		},
+		userConfigDir: os.UserConfigDir,
 	}
 }
 
 func newRootCmd(deps cliDeps) *cobra.Command {
 	root := &cobra.Command{
-		Use:           "translate",
+		Use:           appName,
 		Short:         "Japanese visual novel/game script localization CLI",
+		Version:       version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
@@ -67,11 +79,44 @@ func newRootCmd(deps cliDeps) *cobra.Command {
 
 	root.AddCommand(newPipelineCmd(deps))
 	root.AddCommand(newEntityCmd(deps))
+	root.AddCommand(newVersionCmd(deps))
 	return root
 }
 
+func newVersionCmd(deps cliDeps) *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Print CLI version",
+		Run: func(_ *cobra.Command, _ []string) {
+			fmt.Fprintf(deps.stdout, "%s version %s\n", appName, version)
+		},
+	}
+}
+
+func resolveConfigPath(explicit string, deps cliDeps) (string, error) {
+	if p := strings.TrimSpace(explicit); p != "" {
+		return p, nil
+	}
+	if info, err := os.Stat(localConfigFilename); err == nil && !info.IsDir() {
+		return localConfigFilename, nil
+	}
+	getDir := deps.userConfigDir
+	if getDir == nil {
+		getDir = os.UserConfigDir
+	}
+	dir, err := getDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve user config directory: %w", err)
+	}
+	return filepath.Join(dir, appName, localConfigFilename), nil
+}
+
 func initObserverAndProvider(configPath, saveRawDir, rawPrefix string, deps cliDeps) (config.Config, *observation.Observer, *llm.Provider, error) {
-	cfg, err := config.Load(configPath)
+	resolvedConfigPath, err := resolveConfigPath(configPath, deps)
+	if err != nil {
+		return config.Config{}, nil, nil, err
+	}
+	cfg, err := config.Load(resolvedConfigPath)
 	if err != nil {
 		return config.Config{}, nil, nil, err
 	}

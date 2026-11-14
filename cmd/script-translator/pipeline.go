@@ -108,12 +108,11 @@ func newPipelineRecognizeCmd(deps cliDeps) *cobra.Command {
 	}
 
 	flags := cmd.Flags()
-	flags.StringVarP(&configPath, "config", "c", defaultConfigPath, "Path to config JSON file")
-	flags.StringVarP(&inPath, "in", "i", "", "Path to source script file")
+	flags.StringVarP(&configPath, "config", "c", "", configFlagUsage)
+	flags.StringVarP(&inPath, "in", "i", defaultInputPath, "Path to source script file")
 	flags.StringVarP(&dictPath, "dict", "d", "", "Optional path to entity_dict JSON file")
 	flags.StringVarP(&outPath, "out", "o", "-", "Output JSON path ('-' writes to stdout)")
 	flags.StringVar(&saveRawDir, "save-raw", "", "Optional directory to save raw Responses API JSON bodies as fixtures")
-	_ = cmd.MarkFlagRequired("in")
 	return cmd
 }
 
@@ -139,11 +138,13 @@ func newPipelineTranslateCmd(deps cliDeps) *cobra.Command {
 				return errors.New("cannot combine --dict with --entities")
 			}
 
+			inExplicit := cmd.Flags().Changed("in")
+
 			var entities []model.Entity
 			var err error
 			switch {
 			case cmd.Flags().Changed("entities"):
-				entities, err = loadRecognizeEntities(entitiesPath, deps.stdin, &inPath)
+				entities, err = loadRecognizeEntities(entitiesPath, deps.stdin, &inPath, inExplicit)
 				if err != nil {
 					return err
 				}
@@ -154,7 +155,7 @@ func newPipelineTranslateCmd(deps cliDeps) *cobra.Command {
 				}
 				entities = mapping.Entities
 			case deps.stdinIsTTY != nil && !deps.stdinIsTTY():
-				entities, err = loadRecognizeEntities("-", deps.stdin, &inPath)
+				entities, err = loadRecognizeEntities("-", deps.stdin, &inPath, inExplicit)
 				if err != nil {
 					return err
 				}
@@ -211,16 +212,16 @@ func newPipelineTranslateCmd(deps cliDeps) *cobra.Command {
 	}
 
 	flags := cmd.Flags()
-	flags.StringVarP(&configPath, "config", "c", defaultConfigPath, "Path to config JSON file")
-	flags.StringVarP(&inPath, "in", "i", "", "Path to source script file (optional when piped from recognize)")
+	flags.StringVarP(&configPath, "config", "c", "", configFlagUsage)
+	flags.StringVarP(&inPath, "in", "i", defaultInputPath, "Path to source script file (uses recognize JSON \"input\" when piped and -i is omitted)")
 	flags.StringVarP(&dictPath, "dict", "d", "", "Optional path to entity_dict JSON file when not reading recognize output")
 	flags.StringVarP(&entitiesPath, "entities", "e", "-", "Path to recognize output JSON ('-' reads stdin when piped)")
-	flags.StringVarP(&outPath, "out", "o", "-", "Output translated script path ('-' writes to stdout)")
+	flags.StringVarP(&outPath, "out", "o", defaultOutputPath, "Output translated script path ('-' writes to stdout)")
 	flags.StringVar(&saveRawDir, "save-raw", "", "Optional directory to save raw Responses API JSON bodies as fixtures")
 	return cmd
 }
 
-func loadRecognizeEntities(path string, stdin io.Reader, inPath *string) ([]model.Entity, error) {
+func loadRecognizeEntities(path string, stdin io.Reader, inPath *string, inExplicit bool) ([]model.Entity, error) {
 	raw, err := readInputBytes(path, stdin)
 	if err != nil {
 		return nil, err
@@ -229,7 +230,7 @@ func loadRecognizeEntities(path string, stdin io.Reader, inPath *string) ([]mode
 	if err != nil {
 		return nil, err
 	}
-	if *inPath == "" {
+	if !inExplicit && strings.TrimSpace(payload.Input) != "" {
 		*inPath = strings.TrimSpace(payload.Input)
 	}
 	return payload.Entities, nil

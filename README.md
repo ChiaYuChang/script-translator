@@ -8,14 +8,20 @@
 - OpenAI 或相容 Responses API 的服務與金鑰
 
 ```bash
-# 建置執行檔 ./bin/translate（或直接執行 task build）
-go build -o ./bin/translate ./cmd/translate
+# 建置執行檔 ./bin/script-translator（建議使用 task build 帶入 Taskfile.yml 的 VERSION）
+task build
+
+# 或手動編譯並注入版本（未指定時預設為 dev）
+go build -ldflags "-X main.version=v0.1.0" -o ./bin/script-translator ./cmd/script-translator
 
 # 或直接以 go run 執行
-go run ./cmd/translate --help
+go run ./cmd/script-translator --help
+./bin/script-translator --version
 ```
 
 ## 設定檔（`config.json`）
+
+未傳 `-c / --config` 時，CLI 會優先讀取目前目錄的 `./config.json`；若不存在則改讀 `~/.config/script-translator/config.json`（由 `os.UserConfigDir()` 解析）。
 
 CLI 透過 [`config.Load`](internal/config/config.go) 讀取 JSON 設定檔，會以 JSON Schema 驗證結構並自動套用預設值（不允許未知欄位）：
 
@@ -75,13 +81,14 @@ CLI 透過 [`config.Load`](internal/config/config.go) 讀取 JSON 設定檔，�
 指令結構如下：
 
 ```text
-translate
+script-translator
 ├── pipeline
 │   ├── recognize   # 抽取腳本對話並辨識實體，輸出 JSON 到 stdout 或指定檔案
 │   └── translate   # 讀取腳本與實體對照（stdin pipe、檔案或主字典），翻譯並組裝腳本
-└── entity
-    ├── insert      # 從 recognize JSON（pipe / 檔案）或 --from/--to 合併寫入主字典（alias: import）
-    └── list        # 檢視主字典內容
+├── entity
+│   ├── insert      # 從 recognize JSON（pipe / 檔案）或 --from/--to 合併寫入主字典（alias: import）
+│   └── list        # 檢視主字典內容
+└── version         # 顯示目前版本（亦可用 --version）
 ```
 
 ### 1. 常見工作流
@@ -93,71 +100,76 @@ Console log 輸出在 `stderr`，`stdout` 只保留 JSON / 譯文，可直接以
 ```bash
 export OPENAI_API_KEY="sk-..."
 
-./bin/translate pipeline recognize -c config.json -i e2e/data/e2e_scene.txt -d entity_dict.json \
-  | ./bin/translate pipeline translate -c config.json -o output.txt
+./bin/script-translator pipeline recognize -i e2e/data/e2e_scene.txt -d entity_dict.json \
+  | ./bin/script-translator pipeline translate -o output.txt
 ```
 
-`pipeline recognize` 輸出的 JSON 會同時帶 `"input"`（來源腳本路徑）與 `"entities"`，因此後接的 `pipeline translate` 可省略 `-i`。
+`pipeline recognize` 輸出的 JSON 會同時帶 `"input"`（來源腳本路徑）與 `"entities"`，因此後接的 `pipeline translate` 在未傳 `-i` 時會自動沿用該路徑（單獨執行時則預設讀 `script.txt`、寫到 `translated.txt`）。
 
 #### B. 先辨識輸出、人工審閱後再翻譯與入庫
 
 ```bash
 # 1. 產生候選實體 JSON（不直接修改 entity_dict.json）
-./bin/translate pipeline recognize -c config.json -i e2e/data/e2e_scene.txt -d entity_dict.json -o candidates.json
+./bin/script-translator pipeline recognize -i e2e/data/e2e_scene.txt -d entity_dict.json -o candidates.json
 
 # 2. 人工檢查 / 微調 candidates.json 中的譯名或別名
 
 # 3. 使用審閱後的清單進行翻譯
-./bin/translate pipeline translate -c config.json -e candidates.json -o output.txt
+./bin/script-translator pipeline translate -e candidates.json -o output.txt
 
 # 4. 將確認後的實體與新別名合併寫入 entity_dict.json（全有或全無衝突檢查）
-./bin/translate entity insert -d entity_dict.json -i candidates.json
+./bin/script-translator entity insert -d entity_dict.json -i candidates.json
 ```
 
 也可直接用 pipe 將辨識結果寫入字典：
 
 ```bash
-./bin/translate pipeline recognize -c config.json -i e2e/data/e2e_scene.txt -d entity_dict.json \
-  | ./bin/translate entity insert -d entity_dict.json
+./bin/script-translator pipeline recognize -i e2e/data/e2e_scene.txt -d entity_dict.json \
+  | ./bin/script-translator entity insert -d entity_dict.json
 ```
 
 #### C. 僅用既有字典進行翻譯
 
 ```bash
-./bin/translate pipeline translate -c config.json -i e2e/data/e2e_scene.txt -d entity_dict.json -o output.txt
+# 省略 -i / -o 時預設讀取 script.txt 並輸出到 translated.txt
+./bin/script-translator pipeline translate -d entity_dict.json
 ```
 
 ### 2. 子指令 Flag 參考
 
-#### `translate pipeline recognize`
+#### `script-translator pipeline recognize`
 
-- `-c, --config`：設定檔路徑（預設 `"config.json"`）
-- `-i, --in`：來源腳本路徑（**必填**）
+- `-c, --config`：設定檔路徑（未指定時優先 `./config.json`，否則 `~/.config/script-translator/config.json`）
+- `-i, --in`：來源腳本路徑（預設 `"script.txt"`）
 - `-d, --dict`：現有 `entity_dict.json` 路徑（選填；檔案不存在時視同空字典）
 - `-o, --out`：輸出 JSON 路徑（預設 `"-"`，輸出到 `stdout`）
 - `--save-raw`：選填目錄路徑，保留每次 Responses API 原始 HTTP JSON 回應（可作為 fixture）
 
-#### `translate pipeline translate`
+#### `script-translator pipeline translate`
 
-- `-c, --config`：設定檔路徑（預設 `"config.json"`）
-- `-i, --in`：來源腳本路徑（從 `recognize` JSON 讀取時可省略）
+- `-c, --config`：設定檔路徑（未指定時優先 `./config.json`，否則 `~/.config/script-translator/config.json`）
+- `-i, --in`：來源腳本路徑（預設 `"script.txt"`；從 `recognize` JSON 讀取且未傳 `-i` 時優先沿用其中的 `"input"`）
 - `-e, --entities`：`recognize` 輸出 JSON 檔路徑（或 `"-"` 讀 `stdin`）；不可與 `-d` 同時指定
 - `-d, --dict`：直接使用既有 `entity_dict.json`（不透過 `recognize`）
-- `-o, --out`：譯文輸出路徑（預設 `"-"`，輸出到 `stdout`）
+- `-o, --out`：譯文輸出路徑（預設 `"translated.txt"`；傳 `"-"` 輸出到 `stdout`）
 - `--save-raw`：選填目錄路徑，保留每次 Responses API 原始 HTTP JSON 回應（可作為 fixture）
 
 > 讀取優先順序：指定 `--entities` → 指定 `--dict` → 偵測到來自 pipe 的 `stdin`。
 
-#### `translate entity insert`（alias：`import`）
+#### `script-translator entity insert`（alias：`import`）
 
 - `-d, --dict`：目標 `entity_dict.json` 路徑（**必填**）
 - `-i, --in`：輸入 JSON 檔路徑（支援 `recognize` 輸出或 `{"entities": [...]}`，預設 `"-"` 從 `stdin` 讀取）
 - `--from` / `--to`：快速單筆新增一組日文與繁中譯名（不可與 `-i` 同時使用）
 
-#### `translate entity list`
+#### `script-translator entity list`
 
 - `-d, --dict`：目標 `entity_dict.json` 路徑（**必填**）
 - `--json`：改以 JSON 格式輸出
+
+#### `script-translator version`
+
+- 顯示版本號（亦可直接使用 `--version`）。預設為 `dev`，透過 `-ldflags "-X main.version=..."` 或 `Taskfile.yml` 的 `VERSION` 注入。
 
 ## Observability（Logs 與 Metrics）
 
