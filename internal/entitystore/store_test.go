@@ -106,6 +106,14 @@ func TestSaveLoadRoundTripAndNonNullAliases(t *testing.T) {
 		t.Fatalf("expected non-null empty aliases array [], got %#v", aliasesRaw)
 	}
 
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat() error: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o644 {
+		t.Fatalf("saved entity file mode = %#o, want 0o644", perm)
+	}
+
 	loaded, err := Load(path)
 	if err != nil {
 		t.Fatalf("Load() error: %v", err)

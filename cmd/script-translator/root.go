@@ -266,7 +266,7 @@ func writeFileAtomic(path string, data []byte) error {
 	}
 	path = resolvedPath
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o750); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create output directory %q: %w", dir, err)
 	}
 	tmp, err := os.CreateTemp(dir, ".out-*.tmp")
@@ -285,7 +285,7 @@ func writeFileAtomic(path string, data []byte) error {
 	if _, err := tmp.Write(data); err != nil {
 		return fmt.Errorf("write temp file: %w", err)
 	}
-	if err := tmp.Chmod(0o600); err != nil {
+	if err := tmp.Chmod(0o644); err != nil {
 		return fmt.Errorf("chmod temp file: %w", err)
 	}
 	if err := tmp.Close(); err != nil {

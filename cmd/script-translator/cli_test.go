@@ -1275,8 +1275,9 @@ func TestCLITildeExpansionDoesNotCreateLiteralTildeDir(t *testing.T) {
 	}
 
 	// Verify outputs, cache, logs, metrics, and raw responses landed inside fakeHome.
+	outFilePath := filepath.Join(fakeHome, "work", "out.txt")
 	for _, wantPath := range []string{
-		filepath.Join(fakeHome, "work", "out.txt"),
+		outFilePath,
 		filepath.Join(fakeHome, ".config", "script-translator", "run.jsonl"),
 		filepath.Join(fakeHome, ".config", "script-translator", "usage.jsonl"),
 		filepath.Join(fakeHome, ".config", "script-translator", "raw", "run_001.json"),
@@ -1284,6 +1285,13 @@ func TestCLITildeExpansionDoesNotCreateLiteralTildeDir(t *testing.T) {
 		if _, err := os.Stat(wantPath); err != nil {
 			t.Fatalf("expected file under expanded HOME at %s: %v", wantPath, err)
 		}
+	}
+	outInfo, err := os.Stat(outFilePath)
+	if err != nil {
+		t.Fatalf("stat output file: %v", err)
+	}
+	if perm := outInfo.Mode().Perm(); perm != 0o644 {
+		t.Fatalf("output file mode = %#o, want 0o644", perm)
 	}
 	cacheEntries, err := os.ReadDir(filepath.Join(fakeHome, ".config", "script-translator", "cache"))
 	if err != nil || len(cacheEntries) != 1 {
