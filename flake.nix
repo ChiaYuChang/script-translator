@@ -11,15 +11,15 @@
       sources = {
         x86_64-linux = {
           asset = "script-translator-linux-amd64";
-          hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+          hash = "sha256-AAVXyzeqR9iZdreGGKmaEjigZOb1Fi5ymbgFIKbZX4s=";
         };
         aarch64-linux = {
           asset = "script-translator-linux-arm64";
-          hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+          hash = "sha256-cynmgxPyDf04gZdc8ZuPrDayFX23WIvUJ25lDX19Phw=";
         };
         aarch64-darwin = {
           asset = "script-translator-darwin-arm64";
-          hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+          hash = "sha256-Am8cVqcBNJL6m6zNEJOTIGTKqHS5GnUk7wlFpERWVow=";
         };
       };
 
