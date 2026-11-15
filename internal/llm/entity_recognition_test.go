@@ -3,13 +3,16 @@ package llm
 import (
 	"context"
 	"encoding/json/v2"
+	"io"
 	"net/http"
 	"reflect"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"go-script-translate/internal/model"
+	"go-script-translate/internal/prompt"
 )
 
 func TestMatchKnownEntities(t *testing.T) {
@@ -352,5 +355,74 @@ func TestRecognizeEntitiesWaitAndRetryBackoff(t *testing.T) {
 	wantSlept := []time.Duration{5 * time.Second, 10 * time.Second, 2 * time.Second}
 	if !reflect.DeepEqual(slept, wantSlept) {
 		t.Fatalf("recorded sleeps = %v, want %v", slept, wantSlept)
+	}
+}
+
+func TestRecognizeEntitiesCustomLanguageAndExample(t *testing.T) {
+	var capturedInstructions string
+	var calls atomic.Int32
+
+	p := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var req struct {
+			Instructions string `json:"instructions"`
+		}
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Fatal(err)
+		}
+		capturedInstructions = req.Instructions
+		writeJSONResponse(t, w, "completed", map[string]any{
+			"type": "output_text",
+			"text": `{"entity":[{"canonical":{"from":"Seoul","to":"Seoul"},"aliases":[]}]}`,
+		})
+	})
+
+	_, err := p.RecognizeEntities(context.Background(), "A:Seoul", RecognizeEntitiesParams{
+		Model:      "entity-model-v1",
+		MaxAttempt: 1,
+		Language: prompt.Language{
+			From:     "Korean",
+			To:       "English",
+			Location: "United States",
+		},
+		Example: &prompt.EntityRecognitionExample{
+			Input: prompt.EntityRecognitionExampleInput{
+				Transcript: []prompt.ScriptLine{
+					{Speaker: "지수", Text: "서울에 가자."},
+				},
+			},
+			Output: prompt.EntityRecognitionExampleOutput{
+				Entity: []prompt.RecognizedEntityExample{
+					{Canonical: model.NamePair{From: "서울", To: "Seoul"}},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("RecognizeEntities custom failed: %v", err)
+	}
+	if !strings.Contains(capturedInstructions, "expert Korean visual novel") ||
+		!strings.Contains(capturedInstructions, "English translations for United States") ||
+		!strings.Contains(capturedInstructions, "지수:서울에 가자.") ||
+		strings.Contains(capturedInstructions, "Taiwan") {
+		t.Fatalf("unexpected custom instructions:\n%s", capturedInstructions)
+	}
+
+	// Invalid example must fail before issuing HTTP request.
+	beforeCalls := calls.Load()
+	_, err = p.RecognizeEntities(context.Background(), "A:hello", RecognizeEntitiesParams{
+		Model:      "entity-model-v1",
+		MaxAttempt: 1,
+		Example:    &prompt.EntityRecognitionExample{},
+	})
+	if err == nil {
+		t.Fatal("expected invalid example to fail")
+	}
+	if calls.Load() != beforeCalls {
+		t.Fatalf("expected no HTTP calls on invalid example, got %d new calls", calls.Load()-beforeCalls)
 	}
 }

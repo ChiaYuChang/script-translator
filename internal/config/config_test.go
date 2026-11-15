@@ -311,3 +311,83 @@ func TestConfigExpandsTildePaths(t *testing.T) {
 		t.Fatalf("Metric.File = %q, want %q", loaded.Observation.Metric.File, wantMetric)
 	}
 }
+
+func TestParseLanguageAndPromptExamples(t *testing.T) {
+	// Omitting "language" applies full Japanese -> Traditional Chinese (Taiwan) defaults.
+	defaultCfg, err := Parse([]byte(`{
+		"entity_recognition": {"model": "gpt-entity"},
+		"translation": {"model": "gpt-translate"}
+	}`))
+	if err != nil {
+		t.Fatalf("Parse default failed: %v", err)
+	}
+	if defaultCfg.Language.From != "Japanese" ||
+		defaultCfg.Language.To != "Traditional Chinese" ||
+		defaultCfg.Language.Location != "Taiwan (zh-TW)" {
+		t.Fatalf("unexpected default language: %#v", defaultCfg.Language)
+	}
+
+	// Custom "language" without "location" leaves Location empty (does not inject Taiwan).
+	customCfg, err := Parse([]byte(`{
+		"language": {"from": " Korean ", "to": " English "},
+		"entity_recognition": {
+			"model": "gpt-entity",
+			"example": {
+				"input": {
+					"transcript": [{"speaker": "지수", "text": "서울에 가자."}]
+				},
+				"output": {
+					"entity": [{"canonical": {"from": "서울", "to": "Seoul"}}]
+				}
+			}
+		},
+		"translation": {
+			"model": "gpt-translate",
+			"example": {
+				"input": {
+					"entries": [{"canonical": {"from": "지수", "to": "Jisoo"}}],
+					"dialogue": [{"index": 0, "text": "안녕."}]
+				},
+				"output": {
+					"dialogue": [{"index": 0, "text": "Hey."}]
+				}
+			}
+		}
+	}`))
+	if err != nil {
+		t.Fatalf("Parse custom language/examples failed: %v", err)
+	}
+	if customCfg.Language.From != "Korean" || customCfg.Language.To != "English" || customCfg.Language.Location != "" {
+		t.Fatalf("unexpected custom language: %#v", customCfg.Language)
+	}
+	if customCfg.EntityRecognition.Example == nil || customCfg.Translation.Example == nil {
+		t.Fatal("expected parsed custom prompt examples")
+	}
+
+	// Invalid example must fail Parse.
+	if _, err := Parse([]byte(`{
+		"entity_recognition": {
+			"model": "gpt-entity",
+			"example": {
+				"input": {"transcript": []},
+				"output": {"entity": []}
+			}
+		},
+		"translation": {"model": "gpt-translate"}
+	}`)); err == nil || !strings.Contains(err.Error(), "entity_recognition.example") {
+		t.Fatalf("expected invalid entity_recognition.example error, got: %v", err)
+	}
+
+	if _, err := Parse([]byte(`{
+		"entity_recognition": {"model": "gpt-entity"},
+		"translation": {
+			"model": "gpt-translate",
+			"example": {
+				"input": {"dialogue": [{"index": 0, "text": "a"}]},
+				"output": {"dialogue": [{"index": 1, "text": "b"}]}
+			}
+		}
+	}`)); err == nil || !strings.Contains(err.Error(), "translation.example") {
+		t.Fatalf("expected invalid translation.example error, got: %v", err)
+	}
+}

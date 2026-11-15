@@ -2,7 +2,7 @@
 
 [English](README.md) | [繁體中文](README_zh-TW.md)
 
-Japanese-to-Traditional-Chinese (`zh-TW`) game script translation CLI tool. It uses an OpenAI-compatible Responses API (with Structured Outputs JSON Schema) for entity recognition and context-aware batched translation, while supporting Unix pipe (`|`) composition, unit-level checkpoint resume, and a strictly read-only persistent entity dictionary (`entity_dict`).
+Multi-language game script translation CLI tool (defaults to Japanese → Traditional Chinese `zh-TW`, with configurable `language` and few-shot `example` prompt templates). It uses an OpenAI-compatible Responses API (with Structured Outputs JSON Schema) for entity recognition and context-aware batched translation, while supporting Unix pipe (`|`) composition, unit-level checkpoint resume, and a strictly read-only persistent entity dictionary (`entity_dict`).
 
 ## Installation
 
@@ -45,6 +45,11 @@ For NixOS or Home Manager, add it as a flake input:
     # (Linux: ~/.config/script-translator/config.json, macOS: ~/Library/Application Support/script-translator/config.json).
     # Prefer api_key_env over inline api_key because Nix store files are world-readable.
     settings = {
+      language = {
+        from = "Japanese";
+        to = "Traditional Chinese";
+        location = "Taiwan (zh-TW)";
+      };
       provider = {
         base_url = "https://api.openai.com/v1";
         api_key_env = "OPENAI_API_KEY";
@@ -87,7 +92,7 @@ chmod +x script-translator-linux-amd64
 task build
 
 # Or build manually with a version string (defaults to dev if omitted)
-go build -ldflags "-X main.version=v0.2.5" -o ./bin/script-translator ./cmd/script-translator
+go build -ldflags "-X main.version=v0.3.0" -o ./bin/script-translator ./cmd/script-translator
 
 # Or run directly via go run
 go run ./cmd/script-translator --help
@@ -103,6 +108,11 @@ Configuration is loaded and validated against a strict JSON Schema via [`config.
 ```json
 {
   "cache_dir": "./cache",
+  "language": {
+    "from": "Japanese",
+    "to": "Traditional Chinese",
+    "location": "Taiwan (zh-TW)"
+  },
   "provider": {
     "base_url": "https://api.openai.com/v1",
     "api_key_env": "OPENAI_API_KEY",
@@ -142,6 +152,9 @@ Configuration is loaded and validated against a strict JSON Schema via [`config.
 | Section | Field | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | — | `cache_dir` | No | `"./cache"` | Directory where `script run` stores intermediate artifacts keyed by transcript `hashsum` |
+| `language` | `from` | No | `"Japanese"` | Source script language injected into prompt templates |
+| `language` | `to` | No | `"Traditional Chinese"` | Target localization language injected into prompt templates |
+| `language` | `location` | No | `"Taiwan (zh-TW)"` (when `language` omitted) | Optional target region/locale (omitted by default when `language` is explicitly configured) |
 | `provider` | `base_url` | No | — | Custom OpenAI-compatible API endpoint (`http` / `https` URL) |
 | `provider` | `api_key` | No | — | Explicit API key (overrides `api_key_env`) |
 | `provider` | `api_key_env` | No | `"OPENAI_API_KEY"` | Environment variable name holding the API key |
@@ -149,9 +162,11 @@ Configuration is loaded and validated against a strict JSON Schema via [`config.
 | `provider` | `retry_time` | No | `0` | Base delay in seconds for exponential backoff (`retry_time * 2^0`, `2^1`, ...) on HTTP `429`, `5xx`, transport `unexpected EOF` / `EOF`, and `net.Error` timeouts; on `unexpected EOF`, translation also dynamically shrinks `batch_size` (`max(batch * 9 / 10, 1)`) and recalculates `total_batch` |
 | `entity_recognition` | `model` | Yes | — | Model name used for entity recognition |
 | `entity_recognition` | `max_attempt` | No | `3` | Maximum attempts on entity recognition failure (`>= 1`) |
+| `entity_recognition` | `example` | No | Built-in Japanese→zh-TW example | Optional custom few-shot example (`input.known_entities`, `input.transcript`, `output.entity`, `explanation`) rendered into the entity recognition prompt |
 | `translation` | `model` | Yes | — | Model name used for dialogue translation |
 | `translation` | `batch_size` | No | `20` | Number of dialogue units per translation batch (`>= 1`) |
 | `translation` | `max_attempt` | No | `3` | Maximum attempts per translation batch (`>= 1`) |
+| `translation` | `example` | No | Built-in Japanese→zh-TW example | Optional custom few-shot example (`input.entries`, `input.history`, `input.dialogue`, `output.dialogue`, `note`) rendered into the translation prompt |
 | `observation.log` | `level` | No | `"info"` | `debug` / `info` / `warn` / `error` |
 | `observation.log.console` | `enable` | No | `true` | Write human-readable logs to `stderr` (never pollutes `stdout` pipes) |
 | `observation.log.file` | `enable`, `file` | No | `false` | Append structured JSONL logs (with `time` and UUIDv7 `run_id`) |
@@ -277,7 +292,7 @@ script-translator script recognize -i e2e/data/e2e_scene_ver1.txt -d entity_dict
 
 - `-d, --dict`: Target `entity_dict.json` path (**required**)
 - `-i, --in`: Input JSON path (`recognize` output or `{"entities": [...]}`, default `"-"` reads `stdin`)
-- `--from` / `--to`: Quickly insert a single Japanese/Traditional Chinese name pair (mutually exclusive with `-i`)
+- `--from` / `--to`: Quickly insert a single source/target name pair (mutually exclusive with `-i`)
 
 #### `script-translator entity list`
 

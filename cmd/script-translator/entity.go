@@ -99,8 +99,8 @@ func newEntityInsertCmd(deps cliDeps) *cobra.Command {
 	flags := cmd.Flags()
 	flags.StringVarP(&dictPath, "dict", "d", "", "Path to entity_dict JSON file")
 	flags.StringVarP(&inPath, "in", "i", "-", "Path to recognize/entity JSON file ('-' reads from stdin)")
-	flags.StringVar(&fromName, "from", "", "Insert a single Japanese canonical name (requires --to)")
-	flags.StringVar(&toName, "to", "", "Traditional Chinese translation for --from")
+	flags.StringVar(&fromName, "from", "", "Insert a single source canonical name (requires --to)")
+	flags.StringVar(&toName, "to", "", "Target translation for --from")
 	_ = cmd.MarkFlagRequired("dict")
 	return cmd
 }

@@ -1303,3 +1303,144 @@ func TestCLITildeExpansionDoesNotCreateLiteralTildeDir(t *testing.T) {
 		t.Fatalf("literal ./~ directory must not be created in cwd (err=%v)", err)
 	}
 }
+
+func TestScriptRunCustomLanguageAndExamples(t *testing.T) {
+	dir := t.TempDir()
+	inPath := writeTestScript(t, dir)
+	outPath := filepath.Join(dir, "out.txt")
+	cfgPath := filepath.Join(dir, "config.json")
+
+	var capturedEntityInstructions, capturedTranslateInstructions string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var req map[string]any
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Fatal(err)
+		}
+		modelName, _ := req["model"].(string)
+		inst, _ := req["instructions"].(string)
+
+		var outputText string
+		switch modelName {
+		case "gpt-entity":
+			capturedEntityInstructions = inst
+			outputText = `{"entity":[]}`
+		case "gpt-translate":
+			capturedTranslateInstructions = inst
+			promptBody, _ := req["input"].(string)
+			_, inputJSON, ok := strings.Cut(promptBody, "\nInput:\n")
+			if !ok {
+				t.Fatalf("translation prompt missing Input section:\n%s", promptBody)
+			}
+			var units []model.TranslateUnit
+			if err := json.Unmarshal([]byte(inputJSON), &units); err != nil {
+				t.Fatal(err)
+			}
+			out := make([]model.TranslatedText, 0, len(units))
+			for _, u := range units {
+				switch {
+				case strings.HasPrefix(u.Text, "「"):
+					out = append(out, model.TranslatedText{Index: u.Index, Text: "「Translated line」"})
+				case strings.HasPrefix(u.Text, "（"):
+					out = append(out, model.TranslatedText{Index: u.Index, Text: "（Translated thought）"})
+				default:
+					out = append(out, model.TranslatedText{Index: u.Index, Text: "Translated narration"})
+				}
+			}
+			b, err := json.Marshal(map[string]any{"dialogue": out})
+			if err != nil {
+				t.Fatal(err)
+			}
+			outputText = string(b)
+		default:
+			t.Fatalf("unexpected model: %q", modelName)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.MarshalWrite(w, map[string]any{
+			"id":     "resp_custom",
+			"object": "response",
+			"status": "completed",
+			"output": []map[string]any{{
+				"type":    "message",
+				"status":  "completed",
+				"role":    "assistant",
+				"content": []map[string]any{{"type": "output_text", "text": outputText}},
+			}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}))
+	defer srv.Close()
+
+	cfgRaw := mustMarshalJSONForTest(t, map[string]any{
+		"cache_dir": filepath.Join(dir, "cache"),
+		"language": map[string]any{
+			"from": "Korean",
+			"to":   "English",
+		},
+		"provider": map[string]any{
+			"base_url": srv.URL + "/v1",
+			"api_key":  "test-key",
+		},
+		"entity_recognition": map[string]any{
+			"model":       "gpt-entity",
+			"max_attempt": 1,
+			"example": map[string]any{
+				"input": map[string]any{
+					"transcript": []map[string]any{{"speaker": "지수", "text": "서울에 가자."}},
+				},
+				"output": map[string]any{
+					"entity": []map[string]any{{"canonical": map[string]any{"from": "서울", "to": "Seoul"}}},
+				},
+			},
+		},
+		"translation": map[string]any{
+			"model":       "gpt-translate",
+			"batch_size":  10,
+			"max_attempt": 1,
+			"example": map[string]any{
+				"input": map[string]any{
+					"dialogue": []map[string]any{{"index": 0, "name": "지수", "text": "안녕."}},
+				},
+				"output": map[string]any{
+					"dialogue": []map[string]any{{"index": 0, "text": "Hi."}},
+				},
+			},
+		},
+	})
+	if err := os.WriteFile(cfgPath, cfgRaw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newRootCmd(cliDeps{
+		stdin:      &bytes.Buffer{},
+		stdout:     &bytes.Buffer{},
+		stderr:     &bytes.Buffer{},
+		stdinIsTTY: func() bool { return false },
+	})
+	cmd.SetArgs([]string{
+		"script", "run",
+		"-c", cfgPath,
+		"-i", inPath,
+		"-o", outPath,
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("script run failed: %v", err)
+	}
+
+	if !strings.Contains(capturedEntityInstructions, "expert Korean visual novel") ||
+		!strings.Contains(capturedEntityInstructions, "지수:서울에 가자.") ||
+		strings.Contains(capturedEntityInstructions, "Taiwan") {
+		t.Fatalf("unexpected entity instructions:\n%s", capturedEntityInstructions)
+	}
+	if !strings.Contains(capturedTranslateInstructions, "working into English.") ||
+		!strings.Contains(capturedTranslateInstructions, `"text": "Hi."`) ||
+		strings.Contains(capturedTranslateInstructions, "Taiwan") ||
+		strings.Contains(capturedTranslateInstructions, "新堂ミナト") {
+		t.Fatalf("unexpected translate instructions:\n%s", capturedTranslateInstructions)
+	}
+}

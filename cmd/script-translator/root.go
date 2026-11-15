@@ -71,7 +71,7 @@ func defaultCLIDeps() cliDeps {
 func newRootCmd(deps cliDeps) *cobra.Command {
 	root := &cobra.Command{
 		Use:           appName,
-		Short:         "Japanese visual novel/game script localization CLI",
+		Short:         "Multi-language visual novel/game script localization CLI",
 		Version:       version,
 		SilenceUsage:  true,
 		SilenceErrors: true,

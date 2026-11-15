@@ -2,7 +2,7 @@
 
 [English](README.md) | [繁體中文](README_zh-TW.md)
 
-日文轉繁體中文（`zh-TW`）遊戲腳本翻譯 CLI 工具。透過 OpenAI-compatible Responses API（Structured Outputs JSON Schema）進行專有名詞辨識與批次語境翻譯，支援 Unix pipe (`|`) 串接流程、斷點續傳與唯讀式持久化實體對照表（`entity_dict`）。
+支援多語系之遊戲腳本翻譯 CLI 工具（預設日文轉繁體中文 `zh-TW`，可透過 `language` 與 few-shot `example` 自訂 prompt 模板）。透過 OpenAI-compatible Responses API（Structured Outputs JSON Schema）進行專有名詞辨識與批次語境翻譯，支援 Unix pipe (`|`) 串接流程、斷點續傳與唯讀式持久化實體對照表（`entity_dict`）。
 
 ## 安裝方式
 
@@ -44,6 +44,11 @@ NixOS / Home Manager 可作為 flake input 引入：
     # 選填：非空時會自動產生 config.json（Linux: ~/.config/script-translator/config.json，macOS: ~/Library/Application Support/script-translator/config.json）
     # 注意 Nix store 為全域可讀，建議使用 api_key_env 而非明文 api_key
     settings = {
+      language = {
+        from = "Japanese";
+        to = "Traditional Chinese";
+        location = "Taiwan (zh-TW)";
+      };
       provider = {
         base_url = "https://api.openai.com/v1";
         api_key_env = "OPENAI_API_KEY";
@@ -86,7 +91,7 @@ chmod +x script-translator-linux-amd64
 task build
 
 # 或手動編譯並注入版本（未指定時預設為 dev）
-go build -ldflags "-X main.version=v0.2.5" -o ./bin/script-translator ./cmd/script-translator
+go build -ldflags "-X main.version=v0.3.0" -o ./bin/script-translator ./cmd/script-translator
 
 # 或直接以 go run 執行
 go run ./cmd/script-translator --help
@@ -102,6 +107,11 @@ CLI 透過 [`config.Load`](internal/config/config.go) 讀取 JSON 設定檔，�
 ```json
 {
   "cache_dir": "./cache",
+  "language": {
+    "from": "Japanese",
+    "to": "Traditional Chinese",
+    "location": "Taiwan (zh-TW)"
+  },
   "provider": {
     "base_url": "https://api.openai.com/v1",
     "api_key_env": "OPENAI_API_KEY",
@@ -141,6 +151,9 @@ CLI 透過 [`config.Load`](internal/config/config.go) 讀取 JSON 設定檔，�
 | 區塊 | 欄位 | 必填 | 預設值 | 說明 |
 | --- | --- | --- | --- | --- |
 | — | `cache_dir` | 否 | `"./cache"` | `script run` 依 transcript `hashsum` 存放中間檔快取的目錄 |
+| `language` | `from` | 否 | `"Japanese"` | 填入 prompt 模板的來源腳本語言 |
+| `language` | `to` | 否 | `"Traditional Chinese"` | 填入 prompt 模板的目標翻譯語言 |
+| `language` | `location` | 否 | 省略 `language` 時為 `"Taiwan (zh-TW)"` | 選填的目標地區／語系慣用（若手動設定 `language` 且未填 `location`，則不會自動套用） |
 | `provider` | `base_url` | 否 | — | 自訂 OpenAI-compatible API endpoint（須為 `http` / `https` URL） |
 | `provider` | `api_key` | 否 | — | 直接指定 API key（會覆蓋 `api_key_env`） |
 | `provider` | `api_key_env` | 否 | `"OPENAI_API_KEY"` | 讀取 API key 的環境變數名稱 |
@@ -148,9 +161,11 @@ CLI 透過 [`config.Load`](internal/config/config.go) 讀取 JSON 設定檔，�
 | `provider` | `retry_time` | 否 | `0` | 遇到 HTTP `429`、`5xx`、傳輸層 `unexpected EOF`／`EOF` 或 `net.Error`逾時時的指數退避基準秒數（依序等待 `retry_time * 2^0`, `2^1`, ...；翻譯於 `unexpected EOF` 時還會將 `batch_size` 動態縮小為 `* 9 / 10`，最小為 `1`，並重算 `total_batch`） |
 | `entity_recognition` | `model` | 是 | — | 實體辨識使用的模型名稱 |
 | `entity_recognition` | `max_attempt` | 否 | `3` | 實體辨識失敗時的最大嘗試次數（`>= 1`） |
+| `entity_recognition` | `example` | 否 | 內建日譯繁中範例 | 選填的自訂 few-shot 範例（`input.known_entities`、`input.transcript`、`output.entity`、`explanation`），會格式化填入實體辨識 prompt |
 | `translation` | `model` | 是 | — | 對話翻譯使用的模型名稱 |
 | `translation` | `batch_size` | 否 | `20` | 每次翻譯請求包含的對話單元數（`>= 1`） |
 | `translation` | `max_attempt` | 否 | `3` | 每個翻譯 batch 失敗時的最大嘗試次數（`>= 1`） |
+| `translation` | `example` | 否 | 內建日譯繁中範例 | 選填的自訂 few-shot 範例（`input.entries`、`input.history`、`input.dialogue`、`output.dialogue`、`note`），會格式化填入翻譯 prompt |
 | `observation.log` | `level` | 否 | `"info"` | `debug` / `info` / `warn` / `error` |
 | `observation.log.console` | `enable` | 否 | `true` | 是否輸出人讀 log 到 `stderr`（不會混入 `stdout` pipe） |
 | `observation.log.file` | `enable`, `file` | 否 | `false` | 是否附加 JSONL 結構化 log（含 `time` 與 UUIDv7 `run_id`） |
@@ -276,7 +291,7 @@ script-translator script recognize -i e2e/data/e2e_scene_ver1.txt -d entity_dict
 
 - `-d, --dict`：目標 `entity_dict.json` 路徑（**必填**）
 - `-i, --in`：輸入 JSON 檔路徑（支援 `recognize` 輸出或 `{"entities": [...]}`，預設 `"-"` 從 `stdin` 讀取）
-- `--from` / `--to`：快速單筆新增一組日文原文與繁中譯名對照（不可與 `-i` 同時使用）
+- `--from` / `--to`：快速單筆新增一組來源原文與目標譯名對照（不可與 `-i` 同時使用）
 
 #### `script-translator entity list`
 

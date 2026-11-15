@@ -1,5 +1,5 @@
 {
-  description = "Japanese-to-Traditional-Chinese (zh-TW) game script translation CLI tool";
+  description = "Multi-language game script translation CLI tool (default: Japanese to Traditional Chinese zh-TW)";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -51,7 +51,7 @@
             '';
 
             meta = with pkgs.lib; {
-              description = "Japanese-to-Traditional-Chinese (zh-TW) game script translation CLI tool using OpenAI-compatible Responses API";
+              description = "Multi-language game script translation CLI tool using OpenAI-compatible Responses API (default: Japanese to Traditional Chinese zh-TW)";
               homepage = "https://github.com/ChiaYuChang/script-translator";
               license = licenses.mit;
               mainProgram = "script-translator";

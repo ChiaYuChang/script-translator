@@ -16,6 +16,7 @@ import (
 	"go-script-translate/internal/llm"
 	"go-script-translate/internal/observation"
 	"go-script-translate/internal/pathutil"
+	"go-script-translate/internal/prompt"
 )
 
 const (
@@ -70,6 +71,7 @@ func (p ProviderConfig) LogValue() slog.Value {
 // Config holds application settings aligned with the llm package parameter types.
 type Config struct {
 	CacheDir          string                      `json:"cache_dir,omitzero" jsonschema:"Directory path for cached intermediate script artifacts"`
+	Language          prompt.Language             `json:"language,omitzero" jsonschema:"Source/target localization language and optional regional locale"`
 	Provider          ProviderConfig              `json:"provider" jsonschema:"OpenAI-compatible provider connection settings"`
 	EntityRecognition llm.RecognizeEntitiesParams `json:"entity_recognition" jsonschema:"Entity recognition step parameters"`
 	Translation       llm.TranslateParams         `json:"translation" jsonschema:"Translation step parameters"`
@@ -81,6 +83,7 @@ type Config struct {
 func Default() Config {
 	return Config{
 		CacheDir: DefaultCacheDir,
+		Language: prompt.DefaultLanguage(),
 		Provider: ProviderConfig{
 			APIKeyEnv: DefaultAPIKeyEnv,
 			WaitTime:  DefaultWaitTime,
@@ -109,8 +112,8 @@ func Schema() (*jsonschema.Schema, error) {
 	minOneFloat := 1.0
 	minOneInt := 1
 
-	// Allow omitting "provider" and "observation" so defaults fill nested settings.
-	schema.Required = withoutStrings(schema.Required, "provider", "observation")
+	// Allow omitting "provider", "observation", and "language" so defaults fill nested settings.
+	schema.Required = withoutStrings(schema.Required, "provider", "observation", "language")
 	if cacheProp := schema.Properties["cache_dir"]; cacheProp != nil {
 		b, err := json.Marshal(DefaultCacheDir)
 		if err != nil {
@@ -259,6 +262,13 @@ func Parse(data []byte) (Config, error) {
 	// jsonschema-go skips recursing into required object properties such as
 	// entity_recognition and translation when applying defaults.
 	cfg := Default()
+	if obj, ok := instance.(map[string]any); ok {
+		if _, hasLang := obj["language"]; hasLang {
+			// Clear default locale so specifying e.g. {"to": "English"}
+			// without "location" does not inherit "Taiwan (zh-TW)".
+			cfg.Language = prompt.Language{}
+		}
+	}
 	if err := json.Unmarshal(data, &cfg, json.RejectUnknownMembers(true)); err != nil {
 		return Config{}, err
 	}
@@ -275,6 +285,7 @@ func Parse(data []byte) (Config, error) {
 
 func (c *Config) normalize() {
 	c.CacheDir = strings.TrimSpace(c.CacheDir)
+	c.Language.Normalize()
 	c.Provider.BaseURL = strings.TrimSpace(c.Provider.BaseURL)
 	c.Provider.APIKey = strings.TrimSpace(c.Provider.APIKey)
 	c.Provider.APIKeyEnv = strings.TrimSpace(c.Provider.APIKeyEnv)
@@ -320,6 +331,11 @@ func (c Config) Validate() error {
 	if c.EntityRecognition.MaxAttempt <= 0 {
 		return fmt.Errorf("entity_recognition.max_attempt must be positive (got %d)", c.EntityRecognition.MaxAttempt)
 	}
+	if c.EntityRecognition.Example != nil {
+		if err := c.EntityRecognition.Example.Validate(); err != nil {
+			return fmt.Errorf("entity_recognition.example: %w", err)
+		}
+	}
 
 	if c.Translation.Model == "" {
 		return errors.New("translation.model must not be empty")
@@ -329,6 +345,11 @@ func (c Config) Validate() error {
 	}
 	if c.Translation.MaxAttempt <= 0 {
 		return fmt.Errorf("translation.max_attempt must be positive (got %d)", c.Translation.MaxAttempt)
+	}
+	if c.Translation.Example != nil {
+		if err := c.Translation.Example.Validate(); err != nil {
+			return fmt.Errorf("translation.example: %w", err)
+		}
 	}
 
 	if err := c.Observation.Validate(); err != nil {

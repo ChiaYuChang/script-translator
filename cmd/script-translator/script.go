@@ -159,6 +159,7 @@ func newScriptRecognizeCmd(deps cliDeps) *cobra.Command {
 
 			params := cfg.EntityRecognition
 			params.Dictionary = knownMapping.Entities
+			params.Language = cfg.Language
 
 			transcript := model.TranslateRequest{
 				Entity:   knownMapping.Entities,
@@ -283,10 +284,13 @@ func newScriptTranslateCmd(deps cliDeps) *cobra.Command {
 				slog.Int("entities", len(entities)),
 			)
 
+			translateParams := cfg.Translation
+			translateParams.Language = cfg.Language
+
 			resp, err := provider.Translate(cmd.Context(), model.TranslateRequest{
 				Entity:   entities,
 				Dialogue: extracted.Dialogue,
-			}, cfg.Translation)
+			}, translateParams)
 			if err != nil {
 				return err
 			}
@@ -501,6 +505,7 @@ func newScriptRunCmd(deps cliDeps) *cobra.Command {
 				} else {
 					params := cfg.EntityRecognition
 					params.Dictionary = dictMapping.Entities
+					params.Language = cfg.Language
 					transcript := model.TranslateRequest{
 						Entity:   dictMapping.Entities,
 						Dialogue: extracted.Dialogue,
@@ -570,6 +575,7 @@ func newScriptRunCmd(deps cliDeps) *cobra.Command {
 				)
 
 				translateParams := cfg.Translation
+				translateParams.Language = cfg.Language
 				translateParams.ResumeFrom = resumeFrom
 				translateParams.OnBatchComplete = func(completed []model.TranslatedText) error {
 					return writeJSONAtomic(partialCachePath, partialTranslatedCheckpoint{

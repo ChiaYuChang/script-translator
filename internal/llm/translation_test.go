@@ -21,6 +21,7 @@ import (
 
 	"go-script-translate/internal/model"
 	"go-script-translate/internal/observation"
+	"go-script-translate/internal/prompt"
 )
 
 type capturedResponseRequest struct {
@@ -1346,5 +1347,79 @@ func TestTranslateUnexpectedEOFShrinksBatchSizeAndUsesBackoff(t *testing.T) {
 		entries[2]["total_batch"] != float64(2) ||
 		entries[2]["batch_size"] != float64(9) {
 		t.Fatalf("unexpected batch 2 completion log entry: %#v", entries[2])
+	}
+}
+
+func TestTranslateCustomLanguageAndExample(t *testing.T) {
+	var capturedInstructions string
+	var calls atomic.Int32
+
+	p := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var req struct {
+			Instructions string `json:"instructions"`
+		}
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Fatal(err)
+		}
+		capturedInstructions = req.Instructions
+		writeJSONResponse(t, w, "completed", map[string]any{
+			"type": "output_text",
+			"text": `{"dialogue":[{"index":0,"text":"「Hi.」"}]}`,
+		})
+	})
+
+	_, err := p.Translate(context.Background(), model.TranslateRequest{
+		Dialogue: []model.TranslateUnit{{Index: 0, Speaker: "지수", Text: "「안녕.」"}},
+	}, TranslateParams{
+		Model:      "translate-model-v1",
+		BatchSize:  5,
+		MaxAttempt: 1,
+		Language: prompt.Language{
+			From: "Korean",
+			To:   "English",
+		},
+		Example: &prompt.TranslationExample{
+			Input: prompt.TranslationExampleInput{
+				Dialogue: []prompt.TranslateUnitExample{
+					{Index: 0, Speaker: "지수", Text: "「안녕.」"},
+				},
+			},
+			Output: prompt.TranslationExampleOutput{
+				Dialogue: []model.TranslatedText{
+					{Index: 0, Text: "「Hello.」"},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Translate custom failed: %v", err)
+	}
+	if !strings.Contains(capturedInstructions, "working into English.") ||
+		!strings.Contains(capturedInstructions, "original Korean dialogue") ||
+		!strings.Contains(capturedInstructions, `"text": "「Hello.」"`) ||
+		strings.Contains(capturedInstructions, "Taiwan") ||
+		strings.Contains(capturedInstructions, "新堂ミナト") {
+		t.Fatalf("unexpected custom translation instructions:\n%s", capturedInstructions)
+	}
+
+	beforeCalls := calls.Load()
+	_, err = p.Translate(context.Background(), model.TranslateRequest{
+		Dialogue: []model.TranslateUnit{{Index: 0, Text: "「a」"}},
+	}, TranslateParams{
+		Model:      "translate-model-v1",
+		BatchSize:  5,
+		MaxAttempt: 1,
+		Example:    &prompt.TranslationExample{},
+	})
+	if err == nil {
+		t.Fatal("expected invalid translation example to fail")
+	}
+	if calls.Load() != beforeCalls {
+		t.Fatalf("expected no HTTP calls on invalid example, got %d new calls", calls.Load()-beforeCalls)
 	}
 }

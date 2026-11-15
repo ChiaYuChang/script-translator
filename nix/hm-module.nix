@@ -23,6 +23,11 @@ in {
       default = {};
       example = lib.literalExpression ''
         {
+          language = {
+            from = "Japanese";
+            to = "Traditional Chinese";
+            location = "Taiwan (zh-TW)";
+          };
           provider = {
             base_url = "https://api.openai.com/v1";
             api_key_env = "OPENAI_API_KEY";
@@ -40,7 +45,10 @@ in {
       '';
       description = ''
         Configuration written declaratively to `script-translator/config.json`
-        when non-empty. Prefer `provider.api_key_env` over inline
+        when non-empty. Supports top-level `language` (`from`, `to`, optional
+        `location`), `provider`, `entity_recognition` (including optional
+        few-shot `example`), `translation` (including optional few-shot
+        `example`), and `observation`. Prefer `provider.api_key_env` over inline
         `provider.api_key` since Nix store files are world-readable.
       '';
     };
