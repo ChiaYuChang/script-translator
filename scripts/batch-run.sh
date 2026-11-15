@@ -96,6 +96,22 @@ if [[ -z "$in_dir" || -z "$out_dir" ]]; then
   exit 2
 fi
 
+expand_home() {
+  local p="$1"
+  case "$p" in
+    "~") printf '%s\n' "$HOME" ;;
+    "~/"*) printf '%s/%s\n' "$HOME" "${p#"~/"}" ;;
+    *) printf '%s\n' "$p" ;;
+  esac
+}
+
+in_dir="$(expand_home "$in_dir")"
+out_dir="$(expand_home "$out_dir")"
+[[ -n "$dict_path" ]] && dict_path="$(expand_home "$dict_path")"
+[[ -n "$config_path" ]] && config_path="$(expand_home "$config_path")"
+[[ -n "$cache_dir" ]] && cache_dir="$(expand_home "$cache_dir")"
+[[ -n "$bin_path" ]] && bin_path="$(expand_home "$bin_path")"
+
 if [[ ! -d "$in_dir" ]]; then
   echo "error: input directory does not exist: $in_dir" >&2
   exit 1

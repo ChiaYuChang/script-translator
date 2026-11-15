@@ -22,6 +22,7 @@ import (
 	"go-script-translate/internal/llm"
 	"go-script-translate/internal/model"
 	"go-script-translate/internal/observation"
+	"go-script-translate/internal/pathutil"
 )
 
 const (
@@ -99,7 +100,7 @@ func newVersionCmd(deps cliDeps) *cobra.Command {
 
 func resolveConfigPath(explicit string, deps cliDeps) (string, error) {
 	if p := strings.TrimSpace(explicit); p != "" {
-		return p, nil
+		return pathutil.ExpandHome(p)
 	}
 	getDir := deps.userConfigDir
 	if getDir == nil {
@@ -109,7 +110,11 @@ func resolveConfigPath(explicit string, deps cliDeps) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve user config directory: %w", err)
 	}
-	return filepath.Join(dir, appName, localConfigFilename), nil
+	resolvedDir, err := pathutil.ExpandHome(dir)
+	if err != nil {
+		return "", fmt.Errorf("resolve user config directory: %w", err)
+	}
+	return filepath.Join(resolvedDir, appName, localConfigFilename), nil
 }
 
 func initConfigAndObserver(configPath string, deps cliDeps) (config.Config, *observation.Observer, error) {
@@ -143,7 +148,11 @@ func initProvider(cfg config.Config, saveRawDir, rawPrefix string, obs *observat
 		opts = append(opts, option.WithBaseURL(cfg.Provider.BaseURL))
 	}
 	if dir := strings.TrimSpace(saveRawDir); dir != "" {
-		opts = append(opts, rawResponseMiddleware(dir, rawPrefix, obs))
+		resolvedRawDir, err := pathutil.ExpandHome(dir)
+		if err != nil {
+			return nil, fmt.Errorf("resolve --save-raw directory: %w", err)
+		}
+		opts = append(opts, rawResponseMiddleware(resolvedRawDir, rawPrefix, obs))
 	}
 	client := openai.NewClient(opts...)
 	provider := llm.NewProvider(
@@ -204,7 +213,10 @@ func rawResponseMiddleware(dir, prefix string, obs *observation.Observer) option
 }
 
 func readInputBytes(path string, stdin io.Reader) ([]byte, error) {
-	p := strings.TrimSpace(path)
+	p, err := pathutil.ExpandHome(path)
+	if err != nil {
+		return nil, fmt.Errorf("resolve input path %q: %w", path, err)
+	}
 	if p == "" || p == "-" {
 		data, err := io.ReadAll(stdin)
 		if err != nil {
@@ -212,7 +224,7 @@ func readInputBytes(path string, stdin io.Reader) ([]byte, error) {
 		}
 		return data, nil
 	}
-	data, err := os.ReadFile(p)
+	data, err := os.ReadFile(p) // #nosec G304 -- input path is explicitly provided by CLI/user
 	if err != nil {
 		return nil, fmt.Errorf("read %q: %w", p, err)
 	}
@@ -234,7 +246,10 @@ func decodeRecognizePayload(data []byte) (recognizePayload, error) {
 }
 
 func writeOutputBytes(path string, data []byte, stdout io.Writer) error {
-	p := strings.TrimSpace(path)
+	p, err := pathutil.ExpandHome(path)
+	if err != nil {
+		return fmt.Errorf("resolve output path %q: %w", path, err)
+	}
 	if p == "" || p == "-" {
 		if _, err := stdout.Write(data); err != nil {
 			return fmt.Errorf("write stdout: %w", err)
@@ -245,6 +260,11 @@ func writeOutputBytes(path string, data []byte, stdout io.Writer) error {
 }
 
 func writeFileAtomic(path string, data []byte) error {
+	resolvedPath, err := pathutil.ExpandHome(path)
+	if err != nil {
+		return fmt.Errorf("resolve output path %q: %w", path, err)
+	}
+	path = resolvedPath
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("create output directory %q: %w", dir, err)

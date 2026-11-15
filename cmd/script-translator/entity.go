@@ -9,6 +9,7 @@ import (
 
 	"go-script-translate/internal/entitystore"
 	"go-script-translate/internal/model"
+	"go-script-translate/internal/pathutil"
 )
 
 func newEntityCmd(deps cliDeps) *cobra.Command {
@@ -34,7 +35,11 @@ func newEntityInsertCmd(deps cliDeps) *cobra.Command {
 		Aliases: []string{"import"},
 		Short:   "Insert or merge entities into entity_dict from recognize JSON or --from/--to",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			dictPath = strings.TrimSpace(dictPath)
+			var err error
+			dictPath, err = pathutil.ExpandHome(dictPath)
+			if err != nil {
+				return fmt.Errorf("resolve dictionary path: %w", err)
+			}
 			if dictPath == "" {
 				return errors.New("missing dictionary path (--dict)")
 			}
@@ -110,7 +115,11 @@ func newEntityListCmd(deps cliDeps) *cobra.Command {
 		Use:   "list",
 		Short: "List entities stored in entity_dict",
 		RunE: func(_ *cobra.Command, _ []string) error {
-			dictPath = strings.TrimSpace(dictPath)
+			var err error
+			dictPath, err = pathutil.ExpandHome(dictPath)
+			if err != nil {
+				return fmt.Errorf("resolve dictionary path: %w", err)
+			}
 			if dictPath == "" {
 				return errors.New("missing dictionary path (--dict)")
 			}

@@ -268,3 +268,46 @@ func TestConfigSchemaDefaultsAndDescriptions(t *testing.T) {
 		t.Fatal("expected jsonschema description tag to populate provider description")
 	}
 }
+
+func TestConfigExpandsTildePaths(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	cfgDir := filepath.Join(fakeHome, ".config", "script-translator")
+	if err := os.MkdirAll(cfgDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	cfgRaw := `{
+		"cache_dir": "~/.config/script-translator/cache",
+		"entity_recognition": {"model": "gpt-entity"},
+		"translation": {"model": "gpt-translate"},
+		"observation": {
+			"log": {
+				"level": "info",
+				"console": {"enable": false},
+				"file": {"enable": true, "file": "~/.config/script-translator/run.jsonl"}
+			},
+			"metric": {"enable": true, "file": "~/.config/script-translator/usage.jsonl"}
+		}
+	}`
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.json"), []byte(cfgRaw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := Load("~/.config/script-translator/config.json")
+	if err != nil {
+		t.Fatalf("Load with tilde path failed: %v", err)
+	}
+	wantCache := filepath.Join(fakeHome, ".config", "script-translator", "cache")
+	wantLog := filepath.Join(fakeHome, ".config", "script-translator", "run.jsonl")
+	wantMetric := filepath.Join(fakeHome, ".config", "script-translator", "usage.jsonl")
+	if loaded.CacheDir != wantCache {
+		t.Fatalf("CacheDir = %q, want %q", loaded.CacheDir, wantCache)
+	}
+	if loaded.Observation.Log.File.File != wantLog {
+		t.Fatalf("Log.File.File = %q, want %q", loaded.Observation.Log.File.File, wantLog)
+	}
+	if loaded.Observation.Metric.File != wantMetric {
+		t.Fatalf("Metric.File = %q, want %q", loaded.Observation.Metric.File, wantMetric)
+	}
+}

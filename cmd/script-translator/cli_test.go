@@ -1196,3 +1196,102 @@ func TestCLIScriptRunResumeFromPartialOn429WithChangedBatchSize(t *testing.T) {
 		}
 	}
 }
+
+func TestCLITildeExpansionDoesNotCreateLiteralTildeDir(t *testing.T) {
+	fakeHome := t.TempDir()
+	workDir := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	t.Chdir(workDir)
+
+	// Even if userConfigDir returns literal "~/.config", default init must expand ~ cleanly.
+	initCmd := newRootCmd(cliDeps{
+		stdin:         &bytes.Buffer{},
+		stdout:        &bytes.Buffer{},
+		stderr:        &bytes.Buffer{},
+		stdinIsTTY:    func() bool { return true },
+		userConfigDir: func() (string, error) { return "~/.config", nil },
+	})
+	initCmd.SetArgs([]string{"default", "init"})
+	if err := initCmd.Execute(); err != nil {
+		t.Fatalf("default init with tilde userConfigDir failed: %v", err)
+	}
+	wantCfgPath := filepath.Join(fakeHome, ".config", "script-translator", "config.json")
+	if _, err := os.Stat(wantCfgPath); err != nil {
+		t.Fatalf("expected initialized config under fakeHome at %s: %v", wantCfgPath, err)
+	}
+
+	srv := writeMockResponsesServer(t)
+	cfgRaw := mustMarshalJSONForTest(t, map[string]any{
+		"cache_dir": "~/.config/script-translator/cache",
+		"provider": map[string]any{
+			"base_url": srv.URL + "/v1",
+			"api_key":  "test-key",
+		},
+		"entity_recognition": map[string]any{"model": "gpt-entity", "max_attempt": 1},
+		"translation":        map[string]any{"model": "gpt-translate", "batch_size": 10, "max_attempt": 1},
+		"observation": map[string]any{
+			"log": map[string]any{
+				"level":   "info",
+				"console": map[string]any{"enable": false},
+				"file":    map[string]any{"enable": true, "file": "~/.config/script-translator/run.jsonl"},
+			},
+			"metric": map[string]any{"enable": true, "file": "~/.config/script-translator/usage.jsonl"},
+		},
+	})
+	if err := os.WriteFile(wantCfgPath, cfgRaw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	workInputDir := filepath.Join(fakeHome, "work")
+	if err := os.MkdirAll(workInputDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	_ = writeTestScript(t, workInputDir)
+	if err := entitystore.Save("~/.config/script-translator/dict.json", model.EntityMapping{
+		Entities: []model.Entity{{
+			ID:        1,
+			Canonical: model.NamePair{From: "新堂ミナト", To: "新堂湊"},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	runCmd := newRootCmd(cliDeps{
+		stdin:         &bytes.Buffer{},
+		stdout:        &bytes.Buffer{},
+		stderr:        &bytes.Buffer{},
+		stdinIsTTY:    func() bool { return true },
+		userConfigDir: func() (string, error) { return "~/.config", nil },
+	})
+	runCmd.SetArgs([]string{
+		"script", "run",
+		"-i", "~/work/script.txt",
+		"-d", "~/.config/script-translator/dict.json",
+		"-o", "~/work/out.txt",
+		"--save-raw", "~/.config/script-translator/raw",
+	})
+	if err := runCmd.Execute(); err != nil {
+		t.Fatalf("script run with tilde paths failed: %v", err)
+	}
+
+	// Verify outputs, cache, logs, metrics, and raw responses landed inside fakeHome.
+	for _, wantPath := range []string{
+		filepath.Join(fakeHome, "work", "out.txt"),
+		filepath.Join(fakeHome, ".config", "script-translator", "run.jsonl"),
+		filepath.Join(fakeHome, ".config", "script-translator", "usage.jsonl"),
+		filepath.Join(fakeHome, ".config", "script-translator", "raw", "run_001.json"),
+	} {
+		if _, err := os.Stat(wantPath); err != nil {
+			t.Fatalf("expected file under expanded HOME at %s: %v", wantPath, err)
+		}
+	}
+	cacheEntries, err := os.ReadDir(filepath.Join(fakeHome, ".config", "script-translator", "cache"))
+	if err != nil || len(cacheEntries) != 1 {
+		t.Fatalf("expected 1 cache entry under fakeHome, got %#v (err=%v)", cacheEntries, err)
+	}
+
+	// Crucially, NO literal "./~" directory may exist inside workDir!
+	if _, err := os.Stat(filepath.Join(workDir, "~")); !os.IsNotExist(err) {
+		t.Fatalf("literal ./~ directory must not be created in cwd (err=%v)", err)
+	}
+}

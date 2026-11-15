@@ -18,6 +18,7 @@ import (
 	"go-script-translate/internal/entitystore"
 	"go-script-translate/internal/llm"
 	"go-script-translate/internal/model"
+	"go-script-translate/internal/pathutil"
 	"go-script-translate/internal/translate"
 )
 
@@ -127,7 +128,11 @@ func newScriptRecognizeCmd(deps cliDeps) *cobra.Command {
 		Use:   "recognize",
 		Short: "Extract script dialogue and recognize named entities for review or translation",
 		RunE: func(cmd *cobra.Command, _ []string) (runErr error) {
-			inPath = strings.TrimSpace(inPath)
+			var err error
+			inPath, err = pathutil.ExpandHome(inPath)
+			if err != nil {
+				return fmt.Errorf("resolve input script path: %w", err)
+			}
 			if inPath == "" {
 				return errors.New("missing input script path (--in)")
 			}
@@ -218,14 +223,17 @@ func newScriptTranslateCmd(deps cliDeps) *cobra.Command {
 		Use:   "translate",
 		Short: "Translate extracted script dialogue to an intermediate translated JSON artifact",
 		RunE: func(cmd *cobra.Command, _ []string) (runErr error) {
-			inPath = strings.TrimSpace(inPath)
+			var err error
+			inPath, err = pathutil.ExpandHome(inPath)
+			if err != nil {
+				return fmt.Errorf("resolve input script path: %w", err)
+			}
 			dictPath = strings.TrimSpace(dictPath)
 			entitiesPath = strings.TrimSpace(entitiesPath)
 
 			inExplicit := cmd.Flags().Changed("in")
 
 			var dictMapping model.EntityMapping
-			var err error
 			if dictPath != "" {
 				dictMapping, err = loadReadOnlyDict(dictPath)
 				if err != nil {
@@ -323,7 +331,11 @@ func newScriptAssembleCmd(deps cliDeps) *cobra.Command {
 		Use:   "assemble",
 		Short: "Assemble translated intermediate JSON back onto a target script or extracted skeleton",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			inPath = strings.TrimSpace(inPath)
+			var err error
+			inPath, err = pathutil.ExpandHome(inPath)
+			if err != nil {
+				return fmt.Errorf("resolve target script path: %w", err)
+			}
 			translatedPath = strings.TrimSpace(translatedPath)
 			dictPath = strings.TrimSpace(dictPath)
 			entitiesPath = strings.TrimSpace(entitiesPath)
@@ -438,7 +450,11 @@ func newScriptRunCmd(deps cliDeps) *cobra.Command {
 
 			effectiveCacheRoot := cfg.CacheDir
 			if override := strings.TrimSpace(cacheDir); override != "" {
-				effectiveCacheRoot = override
+				resolvedCacheRoot, err := pathutil.ExpandHome(override)
+				if err != nil {
+					return fmt.Errorf("resolve --cache-dir %q: %w", cacheDir, err)
+				}
+				effectiveCacheRoot = resolvedCacheRoot
 			}
 			hashCacheDir := filepath.Join(effectiveCacheRoot, extracted.Hashsum)
 			extractedCachePath := filepath.Join(hashCacheDir, "extracted.json")
@@ -619,11 +635,14 @@ func resolveScriptInputArg(cmd *cobra.Command, args []string, inPath string) (st
 		}
 		inPath = args[0]
 	}
-	inPath = strings.TrimSpace(inPath)
-	if inPath == "" {
+	resolvedIn, err := pathutil.ExpandHome(inPath)
+	if err != nil {
+		return "", fmt.Errorf("resolve input script path %q: %w", inPath, err)
+	}
+	if resolvedIn == "" {
 		return "", errors.New("missing input script path (--in)")
 	}
-	return inPath, nil
+	return resolvedIn, nil
 }
 
 func loadScriptSource(inPath string, deps cliDeps) (model.ExtractedScript, error) {
@@ -750,7 +769,11 @@ func loadRecognizeEntities(path string, stdin io.Reader, inPath *string, inExpli
 		return nil, err
 	}
 	if !inExplicit && strings.TrimSpace(payload.Input) != "" {
-		*inPath = strings.TrimSpace(payload.Input)
+		resolvedInput, err := pathutil.ExpandHome(payload.Input)
+		if err != nil {
+			return nil, fmt.Errorf("resolve recognize input path %q: %w", payload.Input, err)
+		}
+		*inPath = resolvedInput
 	}
 	return payload.Entities, nil
 }

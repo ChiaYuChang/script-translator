@@ -11,6 +11,8 @@ import (
 	"sync"
 
 	"github.com/google/uuid"
+
+	"go-script-translate/internal/pathutil"
 )
 
 const DefaultLogLevel = "info"
@@ -66,6 +68,21 @@ func (c *Config) Normalize() {
 	c.Metric.File = strings.TrimSpace(c.Metric.File)
 }
 
+// ResolvePaths expands leading "~" / "~/" references on file output paths.
+func (c *Config) ResolvePaths() error {
+	logPath, err := pathutil.ExpandHome(c.Log.File.File)
+	if err != nil {
+		return fmt.Errorf("observation.log.file.file: %w", err)
+	}
+	metricPath, err := pathutil.ExpandHome(c.Metric.File)
+	if err != nil {
+		return fmt.Errorf("observation.metric.file: %w", err)
+	}
+	c.Log.File.File = logPath
+	c.Metric.File = metricPath
+	return nil
+}
+
 // Validate checks that log level and enabled output file paths are valid.
 func (c Config) Validate() error {
 	if _, err := parseLogLevel(c.Log.Level); err != nil {
@@ -103,6 +120,9 @@ func InitWithWriter(cfg Config, consoleOut io.Writer) (*Observer, error) {
 
 func initWithWriter(cfg Config, consoleOut io.Writer) (*Observer, error) {
 	cfg.Normalize()
+	if err := cfg.ResolvePaths(); err != nil {
+		return nil, fmt.Errorf("observation: %w", err)
+	}
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("observation: %w", err)
 	}

@@ -15,6 +15,7 @@ import (
 
 	"go-script-translate/internal/llm"
 	"go-script-translate/internal/observation"
+	"go-script-translate/internal/pathutil"
 )
 
 const (
@@ -215,13 +216,17 @@ func withoutStrings(list []string, exclude ...string) []string {
 
 // Load reads and validates a JSON configuration file at path.
 func Load(path string) (Config, error) {
-	data, err := os.ReadFile(path)
+	resolvedPath, err := pathutil.ExpandHome(path)
 	if err != nil {
-		return Config{}, fmt.Errorf("config: read %q: %w", path, err)
+		return Config{}, fmt.Errorf("config: resolve %q: %w", path, err)
+	}
+	data, err := os.ReadFile(resolvedPath) // #nosec G304 -- config path is explicitly selected by CLI/user
+	if err != nil {
+		return Config{}, fmt.Errorf("config: read %q: %w", resolvedPath, err)
 	}
 	cfg, err := Parse(data)
 	if err != nil {
-		return Config{}, fmt.Errorf("config: parse %q: %w", path, err)
+		return Config{}, fmt.Errorf("config: parse %q: %w", resolvedPath, err)
 	}
 	return cfg, nil
 }
@@ -259,6 +264,9 @@ func Parse(data []byte) (Config, error) {
 	}
 
 	cfg.normalize()
+	if err := cfg.resolvePaths(); err != nil {
+		return Config{}, err
+	}
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
 	}
@@ -273,6 +281,15 @@ func (c *Config) normalize() {
 	c.EntityRecognition.Model = strings.TrimSpace(c.EntityRecognition.Model)
 	c.Translation.Model = strings.TrimSpace(c.Translation.Model)
 	c.Observation.Normalize()
+}
+
+func (c *Config) resolvePaths() error {
+	cacheDir, err := pathutil.ExpandHome(c.CacheDir)
+	if err != nil {
+		return fmt.Errorf("config: cache_dir: %w", err)
+	}
+	c.CacheDir = cacheDir
+	return c.Observation.ResolvePaths()
 }
 
 // Validate checks semantic constraints not expressible in structural JSON Schema

@@ -1,0 +1,110 @@
+# CI: verify tests and build cross-platform release binaries.
+#
+# Tag policy (locked): version tags ONLY (vX.Y.Z) — main/dev pushes
+# build nothing.
+#   - git tag vX.Y.Z -> run Go tests/vet, build 4 platform binaries,
+#                      generate SHA256SUMS, and publish GitHub Release.
+name: build
+"on":
+  push:
+    tags: ["v[0-9]*"]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate tag
+        run: |
+          if [[ ! "${GITHUB_REF#refs/tags/}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "ref must be strict semver vX.Y.Z, got ${GITHUB_REF#refs/tags/}"; exit 1
+          fi
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Vet and Test
+        run: |
+          go vet ./...
+          go test -count=1 ./...
+
+  bins:
+    needs: [verify]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            ext: ""
+          - goos: linux
+            goarch: arm64
+            ext: ""
+          - goos: darwin
+            goarch: arm64
+            ext: ""
+          - goos: windows
+            goarch: amd64
+            ext: ".exe"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build script-translator ${{ matrix.goos }}-${{ matrix.goarch }}
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          CGO_ENABLED=0 go build -trimpath \
+            -ldflags "-s -w -X main.version=${GITHUB_REF#refs/tags/}" \
+            -o script-translator-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }} \
+            ./cmd/script-translator
+      - uses: actions/upload-artifact@v4
+        with:
+          name: script-translator-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: script-translator-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}
+          if-no-files-found: error
+
+  release:
+    needs: [verify, bins]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Validate tag
+        run: |
+          if [[ ! "${GITHUB_REF#refs/tags/}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "ref must be strict semver vX.Y.Z, got ${GITHUB_REF#refs/tags/}"; exit 1
+          fi
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: script-translator-*
+          path: dist
+          merge-multiple: true
+      - name: SHA256SUMS
+        run: |
+          cd dist
+          sha256sum script-translator-* > SHA256SUMS
+      - name: Asset pre-check
+        run: |
+          for f in \
+            script-translator-linux-amd64 \
+            script-translator-linux-arm64 \
+            script-translator-darwin-arm64 \
+            script-translator-windows-amd64.exe; do
+            test -f "dist/$f" || { echo "missing asset: $f"; exit 1; }
+          done
+          test -f dist/SHA256SUMS || { echo "missing asset: SHA256SUMS"; exit 1; }
+      - uses: ncipollo/release-action@v1
+        with:
+          tag: ${{ github.ref_name }}
+          allowUpdates: true
+          replacesArtifacts: true
+          artifactErrorsFailBuild: true
+          artifacts: "dist/script-translator-*,dist/SHA256SUMS"
+          token: ${{ secrets.GITHUB_TOKEN }}

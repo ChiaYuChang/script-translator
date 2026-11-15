@@ -11,45 +11,54 @@ import (
 	"strings"
 
 	"go-script-translate/internal/model"
+	"go-script-translate/internal/pathutil"
 )
 
 // Load reads and validates an entity mapping JSON file.
 // If the file does not exist, it returns an empty mapping without error.
 func Load(path string) (model.EntityMapping, error) {
-	data, err := os.ReadFile(path)
+	resolvedPath, err := pathutil.ExpandHome(path)
+	if err != nil {
+		return model.EntityMapping{}, fmt.Errorf("entitystore: resolve %q: %w", path, err)
+	}
+	data, err := os.ReadFile(resolvedPath) // #nosec G304 -- dictionary path is provided by CLI/user
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return model.EntityMapping{Entities: []model.Entity{}}, nil
 		}
-		return model.EntityMapping{}, fmt.Errorf("entitystore: read %q: %w", path, err)
+		return model.EntityMapping{}, fmt.Errorf("entitystore: read %q: %w", resolvedPath, err)
 	}
 	if len(bytes.TrimSpace(data)) == 0 {
-		return model.EntityMapping{}, fmt.Errorf("entitystore: read %q: empty JSON file", path)
+		return model.EntityMapping{}, fmt.Errorf("entitystore: read %q: empty JSON file", resolvedPath)
 	}
 
 	var mapping model.EntityMapping
 	if err := json.Unmarshal(data, &mapping); err != nil {
-		return model.EntityMapping{}, fmt.Errorf("entitystore: parse %q: %w", path, err)
+		return model.EntityMapping{}, fmt.Errorf("entitystore: parse %q: %w", resolvedPath, err)
 	}
 	if mapping.Entities == nil {
-		return model.EntityMapping{}, fmt.Errorf("entitystore: parse %q: missing entities array", path)
+		return model.EntityMapping{}, fmt.Errorf("entitystore: parse %q: missing entities array", resolvedPath)
 	}
 
 	normalized, err := normalizeAndValidate(mapping, false)
 	if err != nil {
-		return model.EntityMapping{}, fmt.Errorf("entitystore: validate %q: %w", path, err)
+		return model.EntityMapping{}, fmt.Errorf("entitystore: validate %q: %w", resolvedPath, err)
 	}
 	return normalized, nil
 }
 
 // Save atomically writes mapping as formatted JSON to path without mutating the input.
 func Save(path string, mapping model.EntityMapping) error {
+	resolvedPath, err := pathutil.ExpandHome(path)
+	if err != nil {
+		return fmt.Errorf("entitystore: resolve %q: %w", path, err)
+	}
 	normalized, err := normalizeAndValidate(mapping, false)
 	if err != nil {
-		return fmt.Errorf("entitystore: save %q: %w", path, err)
+		return fmt.Errorf("entitystore: save %q: %w", resolvedPath, err)
 	}
 
-	dir := filepath.Dir(path)
+	dir := filepath.Dir(resolvedPath)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("entitystore: create directory %q: %w", dir, err)
 	}
@@ -79,8 +88,8 @@ func Save(path string, mapping model.EntityMapping) error {
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("entitystore: close temp file: %w", err)
 	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		return fmt.Errorf("entitystore: rename temp file to %q: %w", path, err)
+	if err := os.Rename(tmpPath, resolvedPath); err != nil {
+		return fmt.Errorf("entitystore: rename temp file to %q: %w", resolvedPath, err)
 	}
 	cleanup = false
 	return nil
