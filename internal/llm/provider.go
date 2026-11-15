@@ -2,10 +2,15 @@ package llm
 
 import (
 	"context"
+	"encoding/json/jsontext"
 	"errors"
+	"io"
 	"log/slog"
 	"math"
+	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/openai/openai-go/v3"
@@ -42,7 +47,7 @@ func WithWaitTime(d time.Duration) ProviderOption {
 	}
 }
 
-// WithRetryTime sets the base backoff duration used on 429 / 5xx retries
+// WithRetryTime sets the base backoff duration used on 429 / 5xx / EOF retries
 // (retry k waits RetryTime * (1 << k)). Zero or negative disables backoff.
 func WithRetryTime(d time.Duration) ProviderOption {
 	return func(p *Provider) {
@@ -126,7 +131,7 @@ func (p *Provider) retryDelay(err error, retryIdx int) (time.Duration, bool) {
 	if p == nil {
 		return 0, false
 	}
-	if isBackoffStatusError(err) {
+	if isBackoffError(err) {
 		if p.retryTime <= 0 {
 			return 0, false
 		}
@@ -143,13 +148,37 @@ func (p *Provider) retryDelay(err error, retryIdx int) (time.Duration, bool) {
 	return p.waitTime, false
 }
 
-func isBackoffStatusError(err error) bool {
+func isBackoffError(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
 	var apiErr *openai.Error
 	if errors.As(err, &apiErr) {
 		return apiErr.StatusCode == http.StatusTooManyRequests ||
 			apiErr.StatusCode >= http.StatusInternalServerError
 	}
-	return false
+	if isUnexpectedEOFError(err) {
+		return true
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
+}
+
+func isUnexpectedEOFError(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var synErr *jsontext.SyntacticError
+	if errors.As(err, &synErr) {
+		return false
+	}
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return errors.Is(urlErr, io.ErrUnexpectedEOF) ||
+			errors.Is(urlErr, io.EOF) ||
+			strings.Contains(strings.ToLower(urlErr.Error()), "unexpected eof")
+	}
+	return errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF)
 }
 
 func (p *Provider) log() *slog.Logger {
@@ -165,6 +194,7 @@ func (p *Provider) recordAttempt(
 	modelName string,
 	batch int,
 	totalBatch int,
+	batchSize int,
 	attempt int,
 	started time.Time,
 	usage observation.TokenUsage,
@@ -203,6 +233,9 @@ func (p *Provider) recordAttempt(
 			attrs = append(attrs, slog.Int("batch", batch))
 			if totalBatch > 0 {
 				attrs = append(attrs, slog.Int("total_batch", totalBatch))
+			}
+			if batchSize > 0 {
+				attrs = append(attrs, slog.Int("batch_size", batchSize))
 			}
 		}
 		p.log().InfoContext(ctx, "llm request completed", attrs...)

@@ -1212,3 +1212,139 @@ func TestTranslateResumeFromAndPartialCheckpoint(t *testing.T) {
 		t.Fatal("expected error for mismatched ResumeFrom index")
 	}
 }
+
+func TestTranslateUnexpectedEOFShrinksBatchSizeAndUsesBackoff(t *testing.T) {
+	var seenBatchSizes []int
+	var slept []time.Duration
+	var checkpoints [][]model.TranslatedText
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	p := newTestProvider(
+		t,
+		func(w http.ResponseWriter, r *http.Request) {
+			raw, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var req capturedResponseRequest
+			if err := json.Unmarshal(raw, &req); err != nil {
+				t.Fatal(err)
+			}
+			_, inputJSON, ok := strings.Cut(req.Input, "\nInput:\n")
+			if !ok {
+				t.Fatalf("missing Input section:\n%s", req.Input)
+			}
+			var units []translateInputUnit
+			if err := json.Unmarshal([]byte(inputJSON), &units); err != nil {
+				t.Fatal(err)
+			}
+			seenBatchSizes = append(seenBatchSizes, len(units))
+
+			if len(seenBatchSizes) == 1 {
+				// First attempt sends 10 units; simulate abrupt upstream disconnect (unexpected EOF).
+				hj, ok := w.(http.Hijacker)
+				if !ok {
+					t.Fatal("ResponseWriter does not implement http.Hijacker")
+				}
+				conn, _, err := hj.Hijack()
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, _ = conn.Write([]byte("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{\"id\":\"partial"))
+				_ = conn.Close()
+				return
+			}
+
+			out := make([]model.TranslatedText, len(units))
+			for i, u := range units {
+				out[i] = model.TranslatedText{
+					Index: u.Index,
+					Text:  "「譯文」",
+				}
+			}
+			writeBatchResponse(t, w, out)
+		},
+		WithLogger(logger),
+		WithWaitTime(1*time.Second),
+		WithRetryTime(3*time.Second),
+		withSleep(func(_ context.Context, d time.Duration) error {
+			slept = append(slept, d)
+			return nil
+		}),
+	)
+
+	dialogue := make([]model.TranslateUnit, 10)
+	for i := range dialogue {
+		dialogue[i] = model.TranslateUnit{Index: i, Speaker: "ミナト", Text: "「台詞」"}
+	}
+
+	got, err := p.Translate(context.Background(), model.TranslateRequest{Dialogue: dialogue}, TranslateParams{
+		Model:      "translate-model-v1",
+		BatchSize:  10,
+		MaxAttempt: 3,
+		OnBatchComplete: func(completed []model.TranslatedText) error {
+			checkpoints = append(checkpoints, slices.Clone(completed))
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("Translate failed: %v", err)
+	}
+	if len(got) != 10 {
+		t.Fatalf("expected 10 translated units, got %d", len(got))
+	}
+	for i, item := range got {
+		if item.Index != i {
+			t.Fatalf("unit %d has index %d", i, item.Index)
+		}
+	}
+
+	// Attempt 1 tries 10 units (total_batch=1) -> unexpected EOF -> shrinks 10*9/10=9
+	// (recalculates total_batch=2) -> batch 1 completes 9 units -> batch 2 finishes remaining 1.
+	wantSizes := []int{10, 9, 1}
+	if !reflect.DeepEqual(seenBatchSizes, wantSizes) {
+		t.Fatalf("seen batch sizes = %v, want %v", seenBatchSizes, wantSizes)
+	}
+	wantSlept := []time.Duration{3 * time.Second, 1 * time.Second}
+	if !reflect.DeepEqual(slept, wantSlept) {
+		t.Fatalf("recorded sleeps = %v, want %v", slept, wantSlept)
+	}
+	if len(checkpoints) != 2 || len(checkpoints[0]) != 9 || len(checkpoints[1]) != 10 {
+		t.Fatalf("unexpected checkpoints: %#v", checkpoints)
+	}
+
+	logLines := strings.Split(strings.TrimSpace(logBuf.String()), "\n")
+	if len(logLines) != 3 {
+		t.Fatalf("expected 3 JSON log lines (warn + 2 completions), got %d:\n%s", len(logLines), logBuf.String())
+	}
+	var entries []map[string]any
+	for i, line := range logLines {
+		var entry map[string]any
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("invalid JSON log line %d (%q): %v", i, line, err)
+		}
+		entries = append(entries, entry)
+	}
+	if entries[0]["msg"] != "translation batch attempt failed" ||
+		entries[0]["batch"] != float64(1) ||
+		entries[0]["total_batch"] != float64(1) ||
+		entries[0]["batch_size"] != float64(10) ||
+		entries[0]["next_batch_size"] != float64(9) ||
+		entries[0]["next_total_batch"] != float64(2) ||
+		entries[0]["backoff"] != true {
+		t.Fatalf("unexpected warn log entry: %#v", entries[0])
+	}
+	if entries[1]["msg"] != "llm request completed" ||
+		entries[1]["batch"] != float64(1) ||
+		entries[1]["total_batch"] != float64(2) ||
+		entries[1]["batch_size"] != float64(9) {
+		t.Fatalf("unexpected batch 1 completion log entry: %#v", entries[1])
+	}
+	if entries[2]["msg"] != "llm request completed" ||
+		entries[2]["batch"] != float64(2) ||
+		entries[2]["total_batch"] != float64(2) ||
+		entries[2]["batch_size"] != float64(9) {
+		t.Fatalf("unexpected batch 2 completion log entry: %#v", entries[2])
+	}
+}

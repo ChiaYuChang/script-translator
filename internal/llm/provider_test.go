@@ -3,8 +3,10 @@ package llm
 import (
 	"context"
 	"errors"
+	"io"
 	"math"
 	"net/http"
+	"net/url"
 	"reflect"
 	"slices"
 	"strings"
@@ -25,6 +27,8 @@ func TestProviderRetryDelayAndStatusClassification(t *testing.T) {
 	err503 := &openai.Error{StatusCode: http.StatusServiceUnavailable}
 	err500 := &openai.Error{StatusCode: http.StatusInternalServerError}
 	err400 := &openai.Error{StatusCode: http.StatusBadRequest}
+	errURLUnexpectedEOF := &url.Error{Op: "Post", URL: "https://api.example.invalid/v1/responses", Err: io.ErrUnexpectedEOF}
+	errRawEOF := io.EOF
 	errGeneric := errors.New("parse JSON: unexpected EOF")
 
 	for _, tc := range []struct {
@@ -40,6 +44,9 @@ func TestProviderRetryDelayAndStatusClassification(t *testing.T) {
 		{name: "429_4th_retry", err: err429, retryIdx: 3, wantDelay: 40 * time.Second, wantBackoff: true},
 		{name: "503_1st_retry", err: err503, retryIdx: 0, wantDelay: 5 * time.Second, wantBackoff: true},
 		{name: "500_2nd_retry", err: err500, retryIdx: 1, wantDelay: 10 * time.Second, wantBackoff: true},
+		{name: "url_unexpected_eof_1st_retry", err: errURLUnexpectedEOF, retryIdx: 0, wantDelay: 5 * time.Second, wantBackoff: true},
+		{name: "url_unexpected_eof_2nd_retry", err: errURLUnexpectedEOF, retryIdx: 1, wantDelay: 10 * time.Second, wantBackoff: true},
+		{name: "raw_eof_1st_retry", err: errRawEOF, retryIdx: 0, wantDelay: 5 * time.Second, wantBackoff: true},
 		{name: "400_uses_wait_time", err: err400, retryIdx: 2, wantDelay: 2 * time.Second, wantBackoff: false},
 		{name: "generic_uses_wait_time", err: errGeneric, retryIdx: 1, wantDelay: 2 * time.Second, wantBackoff: false},
 	} {
