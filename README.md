@@ -1,29 +1,104 @@
-# go-script-translate
+# script-translator
 
-日文視覺小說 / 遊戲腳本繁體中文（`zh-TW`）本地化 CLI 工具。使用 OpenAI-compatible Responses API（Structured Outputs JSON Schema）進行專有名詞辨識與批次語境翻譯，並支援透過 Unix pipe (`|`) 串接流程與持久化實體對照表（`entity_dict`）。
+[English](README.md) | [繁體中文](README_zh-TW.md)
 
-## 環境需求與建置
+Japanese-to-Traditional-Chinese (`zh-TW`) game script translation CLI tool. It uses an OpenAI-compatible Responses API (with Structured Outputs JSON Schema) for entity recognition and context-aware batched translation, while supporting Unix pipe (`|`) composition, unit-level checkpoint resume, and a strictly read-only persistent entity dictionary (`entity_dict`).
 
-- Go `1.27.3` 以上
-- OpenAI 或相容 Responses API 的服務與金鑰
+## Installation
+
+### 1. Nix (Flakes)
+
+`flake.nix` downloads prebuilt static binaries directly from GitHub Releases (`x86_64-linux`, `aarch64-linux`, `aarch64-darwin`). Each tagged `vX.Y.Z` release triggers CI to automatically update `flake.nix` on `main` with the latest version and SHA256 hashes.
+
+> Note: Installing via the flake requires at least one published GitHub Release matching the version pinned in `flake.nix`.
 
 ```bash
-# 建置執行檔 ./bin/script-translator（建議使用 task build 帶入 Taskfile.yml 的 VERSION）
+# Run directly without installing
+nix run github:ChiaYuChang/script-translator -- --version
+
+# Install into your Nix profile
+nix profile install github:ChiaYuChang/script-translator
+
+# Upgrade to the latest release
+nix profile upgrade script-translator
+```
+
+For NixOS or Home Manager, add it as a flake input:
+
+```nix
+{
+  inputs.script-translator.url = "github:ChiaYuChang/script-translator";
+}
+```
+
+#### Home Manager Module
+
+```nix
+{inputs, ...}: {
+  imports = [
+    inputs.script-translator.homeManagerModules.default
+  ];
+
+  programs.script-translator = {
+    enable = true;
+    # Optional: when non-empty, declaratively generates config.json
+    # (Linux: ~/.config/script-translator/config.json, macOS: ~/Library/Application Support/script-translator/config.json).
+    # Prefer api_key_env over inline api_key because Nix store files are world-readable.
+    settings = {
+      provider = {
+        base_url = "https://api.openai.com/v1";
+        api_key_env = "OPENAI_API_KEY";
+        wait_time = 1;
+        retry_time = 5;
+      };
+      entity_recognition.model = "gpt-4.1-mini";
+      translation = {
+        model = "gpt-4.1";
+        batch_size = 20;
+      };
+    };
+  };
+}
+```
+
+If you only want the package itself (e.g., for NixOS), use `inputs.script-translator.packages.${pkgs.stdenv.hostPlatform.system}.default` or `inputs.script-translator.overlays.default` (provides `pkgs.script-translator`).
+
+### 2. GitHub Releases
+
+Prebuilt binaries and `SHA256SUMS` are published on [Releases](https://github.com/ChiaYuChang/script-translator/releases):
+
+- `script-translator-linux-amd64`
+- `script-translator-linux-arm64`
+- `script-translator-darwin-arm64`
+- `script-translator-windows-amd64.exe`
+
+```bash
+chmod +x script-translator-linux-amd64
+./script-translator-linux-amd64 --version
+```
+
+### 3. Build from Source
+
+- Go `1.27.3` or later
+- OpenAI or compatible Responses API endpoint and API key
+
+```bash
+# Build ./bin/script-translator using VERSION from Taskfile.yml
 task build
 
-# 或手動編譯並注入版本（未指定時預設為 dev）
-go build -ldflags "-X main.version=v0.1.0" -o ./bin/script-translator ./cmd/script-translator
+# Or build manually with a version string (defaults to dev if omitted)
+go build -ldflags "-X main.version=v0.2.5" -o ./bin/script-translator ./cmd/script-translator
 
-# 或直接以 go run 執行
+# Or run directly via go run
 go run ./cmd/script-translator --help
 ./bin/script-translator --version
 ```
 
-## 設定檔（`config.json`）
+## Configuration (`config.json`)
 
-未傳 `-c / --config` 時，CLI 直接讀取 `~/.config/script-translator/config.json`（由 `os.UserConfigDir()` 展開），不進行目前目錄回退；檔案不存在時會直接報錯，可先以 `script-translator default init` 在預設位置產生最簡範本。
+When `-c / --config` is not passed, the CLI reads `~/.config/script-translator/config.json` (resolved via `os.UserConfigDir()`; `~` home expansion is supported across path flags and config paths) with no current-directory fallback. If the file does not exist, it returns an error; run `script-translator default init` to generate a minimal valid config at the default location.
 
-CLI 透過 [`config.Load`](internal/config/config.go) 讀取 JSON 設定檔，會以 JSON Schema 驗證結構並自動套用預設值（不允許未知欄位）：
+Configuration is loaded and validated against a strict JSON Schema via [`config.Load`](internal/config/config.go) (unknown fields are rejected and defaults are applied automatically):
 
 ```json
 {
@@ -62,203 +137,203 @@ CLI 透過 [`config.Load`](internal/config/config.go) 讀取 JSON 設定檔，�
 }
 ```
 
-### 欄位說明
+### Field Reference
 
-| 區塊 | 欄位 | 必填 | 預設值 | 說明 |
+| Section | Field | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| — | `cache_dir` | 否 | `"./cache"` | `script run` 依 transcript `hashsum` 存放中間檔快取的目錄 |
-| `provider` | `base_url` | 否 | — | 自訂 OpenAI-compatible API endpoint（須為 `http` / `https` URL） |
-| `provider` | `api_key` | 否 | — | 直接指定 API key（會覆蓋 `api_key_env`） |
-| `provider` | `api_key_env` | 否 | `"OPENAI_API_KEY"` | 讀取 API key 的環境變數名稱 |
-| `provider` | `wait_time` | 否 | `0` | 每次 LLM 呼叫／翻譯 batch 之間及一般錯誤重試前的等待秒數（`0` 表示不等待） |
-| `provider` | `retry_time` | 否 | `0` | 遇到 HTTP `429` 或 `5xx` server error 時的指數退避基準秒數（依序等待 `retry_time * 2^0`, `2^1`, ...；`0` 表示不等待） |
-| `entity_recognition` | `model` | 是 | — | 實體辨識使用的模型名稱 |
-| `entity_recognition` | `max_attempt` | 否 | `3` | 實體辨識失敗時的最大嘗試次數（`>= 1`） |
-| `translation` | `model` | 是 | — | 對話翻譯使用的模型名稱 |
-| `translation` | `batch_size` | 否 | `20` | 每次翻譯請求包含的對話單元數（`>= 1`） |
-| `translation` | `max_attempt` | 否 | `3` | 每個翻譯 batch 失敗時的最大嘗試次數（`>= 1`） |
-| `observation.log` | `level` | 否 | `"info"` | `debug` / `info` / `warn` / `error` |
-| `observation.log.console` | `enable` | 否 | `true` | 是否輸出人讀 log 到 `stderr`（不會混入 `stdout` pipe） |
-| `observation.log.file` | `enable`, `file` | 否 | `false` | 是否附加 JSONL 結構化 log（含 `time` 與 UUIDv7 `run_id`） |
-| `observation.metric` | `enable`, `file` | 否 | `false` | 是否即時附加 JSONL metric 事件 |
+| — | `cache_dir` | No | `"./cache"` | Directory where `script run` stores intermediate artifacts keyed by transcript `hashsum` |
+| `provider` | `base_url` | No | — | Custom OpenAI-compatible API endpoint (`http` / `https` URL) |
+| `provider` | `api_key` | No | — | Explicit API key (overrides `api_key_env`) |
+| `provider` | `api_key_env` | No | `"OPENAI_API_KEY"` | Environment variable name holding the API key |
+| `provider` | `wait_time` | No | `0` | Delay in seconds between LLM calls / translation batches and before retrying general errors (`0` disables waiting) |
+| `provider` | `retry_time` | No | `0` | Base delay in seconds for exponential backoff (`retry_time * 2^0`, `2^1`, ...) on HTTP `429`, `5xx`, transport `unexpected EOF` / `EOF`, and `net.Error` timeouts; on `unexpected EOF`, translation also dynamically shrinks `batch_size` (`max(batch * 9 / 10, 1)`) and recalculates `total_batch` |
+| `entity_recognition` | `model` | Yes | — | Model name used for entity recognition |
+| `entity_recognition` | `max_attempt` | No | `3` | Maximum attempts on entity recognition failure (`>= 1`) |
+| `translation` | `model` | Yes | — | Model name used for dialogue translation |
+| `translation` | `batch_size` | No | `20` | Number of dialogue units per translation batch (`>= 1`) |
+| `translation` | `max_attempt` | No | `3` | Maximum attempts per translation batch (`>= 1`) |
+| `observation.log` | `level` | No | `"info"` | `debug` / `info` / `warn` / `error` |
+| `observation.log.console` | `enable` | No | `true` | Write human-readable logs to `stderr` (never pollutes `stdout` pipes) |
+| `observation.log.file` | `enable`, `file` | No | `false` | Append structured JSONL logs (with `time` and UUIDv7 `run_id`) |
+| `observation.metric` | `enable`, `file` | No | `false` | Stream JSONL usage metric events in real time |
 
-## CLI 指令與使用方式
+## CLI Commands & Workflows
 
-指令結構如下：
+Command hierarchy:
 
 ```text
 script-translator
 ├── script
-│   ├── extract     # 抽取腳本對話（含 index / line_index）、retained 骨架與 hashsum 至 JSON
-│   ├── hashsum     # 計算腳本 transcript 的 SHA-256 hashsum（忽略 command / comment 等 metadata）
-│   ├── recognize   # 抽取腳本對話並辨識實體，輸出 JSON（唯讀讀取 entity_dict）
-│   ├── translate   # 呼叫 LLM 翻譯對話，輸出中間譯文 JSON（含 hashsum，不直接組裝）
-│   ├── assemble    # 將翻譯中間 JSON 組裝回目標腳本或 extracted 骨架（預設校驗 hashsum）
-│   └── run         # 一鍵執行全流程，依 cache_dir/<hashsum>/ 快取自動跳過已翻譯的 LLM 呼叫
+│   ├── extract     # Extract dialogue (with index / line_index), retained skeleton, and hashsum to JSON
+│   ├── hashsum     # Compute SHA-256 hashsum of normalized transcript (ignores command/comment metadata)
+│   ├── recognize   # Extract dialogue and recognize entities to JSON (reads entity_dict read-only)
+│   ├── translate   # Call LLM to translate dialogue into intermediate JSON (with hashsum, no assembly)
+│   ├── assemble    # Reassemble translated JSON back into target script or extracted skeleton (verifies hashsum)
+│   └── run         # Run full pipeline end-to-end with cache_dir/<hashsum>/ reuse and partial resume
 ├── entity
-│   ├── insert      # 從 recognize JSON（pipe / 檔案）或 --from/--to 合併寫入主字典（alias: import）
-│   └── list        # 檢視主字典內容
+│   ├── insert      # Merge recognize JSON (pipe/file) or --from/--to pair into entity_dict (alias: import)
+│   └── list        # Display entries in entity_dict
 ├── default
-│   ├── all         # 列出全部預設路徑與參數
-│   ├── which       # 查詢單一預設變數值
-│   └── init        # 在預設設定位置產生最簡 config.json
-└── version         # 顯示目前版本（亦可用 --version）
+│   ├── all         # List all default paths and parameters
+│   ├── which       # Print a single default setting value
+│   └── init        # Create a minimal valid config.json at the default config path
+└── version         # Print current version (or use --version)
 ```
 
-> 安全原則：所有 `script *` 指令對 `--dict`（`entity_dict.json`）一律為**唯讀讀取**，不會自動寫回主字典；請審閱後由 `entity insert` 手動寫入。
+> Safety rule: Every `script *` subcommand treats `--dict` (`entity_dict.json`) as strictly **read-only** and never mutates your master dictionary. Review candidates and commit them explicitly with `entity insert`.
 
-### 1. 常見工作流
+### 1. Common Workflows
 
-#### A. 一鍵執行（`script run`，支援 `hashsum` 快取重用）
+#### A. End-to-End Execution (`script run` with `hashsum` caching and partial resume)
 
 ```bash
 export OPENAI_API_KEY="sk-..."
 
-# 首次執行：辨識 + 翻譯後自動快取於 ./cache/<hashsum>/並輸出譯文
-./bin/script-translator script run script_v1.txt -d entity_dict.json -o translated_v1.txt
+# First run: recognizes + translates, caches under ./cache/<hashsum>/, and writes output
+script-translator script run script_v1.txt -d entity_dict.json -o translated_v1.txt
 
-# 僅調整 command / comment 的新版本腳本（相同 hashsum）：命中快取跳過 LLM，直接 assemble
-./bin/script-translator script run script_v2.txt -d entity_dict.json -o translated_v2.txt
+# Script updated with only command/comment metadata changes (same hashsum): cache hit skips LLM calls
+script-translator script run script_v2.txt -d entity_dict.json -o translated_v2.txt
 ```
 
-#### B. 分階段產出中間檔、人工審閱或跨版本重用
+#### B. Staged Artifacts for Manual Review or Cross-Version Reuse
 
 ```bash
-# 1. 抽取對話與骨架（產生 extracted.json，內含 hashsum、dialogue、retained）
-./bin/script-translator script extract -i script_v1.txt -o extracted.json
+# 1. Extract dialogue and script skeleton (extracted.json with hashsum, dialogue, retained)
+script-translator script extract -i script_v1.txt -o extracted.json
 
-# 2. 辨識候選實體（唯讀參考 entity_dict.json，不修改原檔）
-./bin/script-translator script recognize -i extracted.json -d entity_dict.json -o recognized.json
+# 2. Recognize candidate entities (reads entity_dict.json read-only)
+script-translator script recognize -i extracted.json -d entity_dict.json -o recognized.json
 
-# 3. 人工檢查 / 入庫（選用）
-./bin/script-translator entity insert -d entity_dict.json -i recognized.json
+# 3. Review / merge approved terms into master dictionary (optional)
+script-translator entity insert -d entity_dict.json -i recognized.json
 
-# 4. 產生純翻譯中間檔 translated.json
-./bin/script-translator script translate -i extracted.json -d entity_dict.json -e recognized.json -o translated.json
+# 4. Translate into intermediate translated.json
+script-translator script translate -i extracted.json -d entity_dict.json -e recognized.json -o translated.json
 
-# 5. 組裝回 script_v1 或只改了 metadata 的 script_v2
-./bin/script-translator script assemble -i script_v2.txt -t translated.json -d entity_dict.json -o translated_v2.txt
+# 5. Reassemble into script_v1 or metadata-updated script_v2
+script-translator script assemble -i script_v2.txt -t translated.json -d entity_dict.json -o translated_v2.txt
 ```
 
-#### C. 直接用 pipe 串接
+#### C. Unix Pipe Composition
 
-Console log 輸出在 `stderr`，`stdout` 只保留 JSON，可直接以 `|` 串接：
+Console logs go to `stderr` while `stdout` emits clean JSON, so stages compose directly over pipes:
 
 ```bash
-./bin/script-translator script recognize -i e2e/data/e2e_scene_ver1.txt -d entity_dict.json \
-  | ./bin/script-translator script translate -d entity_dict.json -e - \
-  | ./bin/script-translator script assemble -i e2e/data/e2e_scene_ver1.txt -d entity_dict.json -o output.txt
+script-translator script recognize -i e2e/data/e2e_scene_ver1.txt -d entity_dict.json \
+  | script-translator script translate -d entity_dict.json -e - \
+  | script-translator script assemble -i e2e/data/e2e_scene_ver1.txt -d entity_dict.json -o output.txt
 ```
 
-### 2. 子指令 Flag 參考
+### 2. Subcommand Flag Reference
 
 #### `script-translator script extract [script]`
 
-- `-i, --in`：來源腳本路徑（預設 `"script.txt"`；傳 `"-"` 讀 `stdin`，亦可改用位置參數）
-- `-o, --out`：輸出 `extracted.json` 路徑（預設 `"-"` 輸出到 `stdout`）
+- `-i, --in`: Source script path (default `"script.txt"`; `"-"` reads `stdin`, or pass as positional arg)
+- `-o, --out`: Output `extracted.json` path (default `"-"` writes to `stdout`)
 
 #### `script-translator script hashsum [script]`
 
-- `-i, --in`：來源腳本或 `extracted.json` 路徑（預設 `"script.txt"`；傳 `"-"` 讀 `stdin`，亦可改用位置參數）
-- 不需 `config.json`，依正規化對話 `transcript` 輸出 SHA-256。
+- `-i, --in`: Source script or `extracted.json` path (default `"script.txt"`; `"-"` reads `stdin`, or pass as positional arg)
+- Does not require `config.json`; outputs SHA-256 of the normalized dialogue `transcript`.
 
 #### `script-translator script recognize`
 
-- `-c, --config`：設定檔路徑（預設 `~/.config/script-translator/config.json`）
-- `-i, --in`：來源腳本或 `extracted.json` 路徑（預設 `"script.txt"`）
-- `-d, --dict`：現有 `entity_dict.json` 路徑（選填・唯讀；檔案不存在時視同空字典）
-- `-o, --out`：輸出 JSON 路徑（預設 `"-"`，輸出到 `stdout`）
-- `--save-raw`：選填目錄路徑，保留每次 Responses API 原始 HTTP JSON 回應
+- `-c, --config`: Config file path (default `~/.config/script-translator/config.json`)
+- `-i, --in`: Source script or `extracted.json` path (default `"script.txt"`)
+- `-d, --dict`: Existing `entity_dict.json` path (optional, read-only; treated as empty if missing)
+- `-o, --out`: Output JSON path (default `"-"`, writes to `stdout`)
+- `--save-raw`: Optional directory to save raw HTTP JSON responses from each Responses API call
 
 #### `script-translator script translate`
 
-- `-c, --config`：設定檔路徑（預設 `~/.config/script-translator/config.json`）
-- `-i, --in`：來源腳本或 `extracted.json` 路徑（預設 `"script.txt"`；從 `recognize` JSON 讀取且未傳 `-i` 時優先沿用其中的 `"input"`）
-- `-e, --entities`：`recognize` 輸出 JSON 檔路徑（或 `"-"` 讀 `stdin`）；可與 `-d` 併用於記憶體內合併（不修改 `-d`）
-- `-d, --dict`：唯讀讀取既有 `entity_dict.json`
-- `-o, --out`：中間譯文 `translated.json` 輸出路徑（預設 `"-"`，輸出到 `stdout`）
-- `--save-raw`：選填目錄路徑，保留每次 Responses API 原始 HTTP JSON 回應
+- `-c, --config`: Config file path (default `~/.config/script-translator/config.json`)
+- `-i, --in`: Source script or `extracted.json` path (default `"script.txt"`; inherits `"input"` from `recognize` JSON when `-i` is omitted)
+- `-e, --entities`: Path to `recognize` output JSON (or `"-"` for `stdin`); merged in memory with `-d` without modifying `-d`
+- `-d, --dict`: Read-only `entity_dict.json` path
+- `-o, --out`: Intermediate `translated.json` output path (default `"-"`, writes to `stdout`)
+- `--save-raw`: Optional directory to save raw HTTP JSON responses from each Responses API call
 
 #### `script-translator script assemble`
 
-- `-i, --in`：目標腳本或 `extracted.json` 骨架路徑（預設 `"script.txt"`）
-- `-t, --translated`：中間譯文 `translated.json` 路徑（預設 `"-"` 從 `stdin` 讀取）
-- `-d, --dict`：唯讀 `entity_dict.json` 路徑（用於說話者名稱映射）
-- `-e, --entities`：選填額外 `recognize` JSON 路徑（唯讀補充說話者映射）
-- `-o, --out`：最終譯文輸出路徑（預設 `"translated.txt"`；傳 `"-"` 輸出到 `stdout`）
-- `--force`：略過目標腳本與 `translated.json` 的 `hashsum` 檢查
+- `-i, --in`: Target script or `extracted.json` skeleton path (default `"script.txt"`)
+- `-t, --translated`: Intermediate `translated.json` path (default `"-"` reads `stdin`)
+- `-d, --dict`: Read-only `entity_dict.json` path (used for speaker name mapping)
+- `-e, --entities`: Optional extra `recognize` JSON path (read-only speaker fallback)
+- `-o, --out`: Final localized script path (default `"translated.txt"`; `"-"` writes to `stdout`)
+- `--force`: Skip `hashsum` verification between the target script and `translated.json`
 
 #### `script-translator script run [script]`
 
-- `-c, --config`：設定檔路徑
-- `-i, --in`：來源腳本或 `extracted.json` 路徑（預設 `"script.txt"`，亦可改用位置參數）
-- `-d, --dict`：唯讀 `entity_dict.json` 路徑（絕不寫回）
-- `-o, --out`：最終譯文輸出路徑（預設 `"translated.txt"`；傳 `"-"` 輸出到 `stdout`）
-- `--cache-dir`：覆寫設定檔 `cache_dir`（設定檔預設 `"./cache"`）
-- `--no-cache`：忽略既有 `<cache_dir>/<hashsum>/` 快取，重新呼叫 LLM 並刷新快取；若前次執行於某 batch 中斷，預設會讀取 `translated.partial.json` 從已完成的對話單元接續翻譯（支援調整 `batch_size` 後續跑）
-- `--save-raw`：選填目錄路徑，保留每次 Responses API 原始 HTTP JSON 回應
+- `-c, --config`: Config file path
+- `-i, --in`: Source script or `extracted.json` path (default `"script.txt"`, or pass as positional arg)
+- `-d, --dict`: Read-only `entity_dict.json` path (never modified)
+- `-o, --out`: Final localized script path (default `"translated.txt"`; `"-"` writes to `stdout`)
+- `--cache-dir`: Override configured `cache_dir` (default `"./cache"`)
+- `--no-cache`: Ignore existing `<cache_dir>/<hashsum>/` cache and re-run LLM calls; on normal runs interrupted mid-translation, reads `translated.partial.json` to resume from completed units (works across changed or shrunk `batch_size`)
+- `--save-raw`: Optional directory to save raw HTTP JSON responses from each Responses API call
 
-#### `script-translator entity insert`（alias：`import`）
+#### `script-translator entity insert` (alias: `import`)
 
-- `-d, --dict`：目標 `entity_dict.json` 路徑（**必填**）
-- `-i, --in`：輸入 JSON 檔路徑（支援 `recognize` 輸出或 `{"entities": [...]}`，預設 `"-"` 從 `stdin` 讀取）
-- `--from` / `--to`：快速單筆新增一組日文與繁中譯名（不可與 `-i` 同時使用）
+- `-d, --dict`: Target `entity_dict.json` path (**required**)
+- `-i, --in`: Input JSON path (`recognize` output or `{"entities": [...]}`, default `"-"` reads `stdin`)
+- `--from` / `--to`: Quickly insert a single Japanese/Traditional Chinese name pair (mutually exclusive with `-i`)
 
 #### `script-translator entity list`
 
-- `-d, --dict`：目標 `entity_dict.json` 路徑（**必填**）
-- `--json`：改以 JSON 格式輸出
+- `-d, --dict`: Target `entity_dict.json` path (**required**)
+- `--json`: Output as JSON
 
 #### `script-translator default all` / `which <key>` / `init`
 
-- `default all`：列出目前所有預設路徑與參數（`CONFIG`、`INPUT`、`OUTPUT`、`CACHE_DIR`、`APIKEY_ENV`、`BATCH_SIZE`、`MAX_ATTEMPT`、`WAIT_TIME`、`RETRY_TIME`、`LOG_LEVEL`）；可加 `--json` 以 JSON 格式輸出
-- `default which <key>`：輸出單一指定預設值（不分大小寫，如 `CONFIG`、`APIKEY_ENV`、`CACHE_DIR`），適合搭配 shell script 使用
-- `default init`：於預設設定位置（`~/.config/script-translator/config.json`）建立可通過 schema 驗證的最簡 `config.json`（若已存在須加 `-f / --force` 才覆寫）
+- `default all`: List all default paths and parameters (`CONFIG`, `INPUT`, `OUTPUT`, `CACHE_DIR`, `APIKEY_ENV`, `BATCH_SIZE`, `MAX_ATTEMPT`, `WAIT_TIME`, `RETRY_TIME`, `LOG_LEVEL`); pass `--json` for JSON output
+- `default which <key>`: Print a single default value (case-insensitive, e.g. `CONFIG`, `APIKEY_ENV`, `CACHE_DIR`) for shell scripts
+- `default init`: Create a minimal schema-valid `config.json` at `~/.config/script-translator/config.json` (pass `-f / --force` to overwrite an existing file)
 
 #### `script-translator version`
 
-- 顯示版本號（亦可直接使用 `--version`）。預設為 `dev`，透過 `-ldflags "-X main.version=..."` 或 `Taskfile.yml` 的 `VERSION` 注入。
+- Print CLI version (also `--version`). Defaults to `dev` unless injected via `-ldflags "-X main.version=..."` or `VERSION` in `Taskfile.yml`.
 
-## Observability（Logs 與 Metrics）
+## Observability (Logs & Metrics)
 
-每次執行會產生唯一的 UUIDv7 `run_id`：
+Each invocation generates a unique UUIDv7 `run_id`:
 
-- **Logs**（`observation.log`）：每筆包含 `time` 與 `run_id`，`file` 目標以 JSONL 格式附加。
-- **Metrics**（`observation.metric`）：以 JSONL 格式即時附加寫入：
-  - `entity_usage`：每次實體辨識 attempt 寫一筆
-  - `translation_batch_usage`：每個翻譯 batch 每次 attempt 寫一筆
-  - `total_usage`：執行結束（包含 `SIGINT` / `SIGTERM` 正常中止）時補寫一筆該 `run_id` 的總請求數、錯誤數、重試數與 token 消耗彙總
+- **Logs** (`observation.log`): Every entry includes `time` and `run_id`; file output appends structured JSONL.
+- **Metrics** (`observation.metric`): Streams JSONL events in real time:
+  - `entity_usage`: One event per entity recognition attempt
+  - `translation_batch_usage`: One event per translation batch attempt
+  - `total_usage`: Summary event emitted on completion (including graceful `SIGINT` / `SIGTERM` shutdown) with total requests, errors, retries, and token usage
 
-## 開發與測試
+## Development & Testing
 
 ```bash
 go test -count=1 ./...
 go vet ./...
 ```
 
-### E2E 測試（`e2e/` 與 `Taskfile.yml`）
+### E2E Tests (`e2e/` & `Taskfile.yml`)
 
-[`e2e/e2e_test.go`](e2e/e2e_test.go) **預設使用 `e2e/fixtures/` 內錄製的 raw response 搭配本機 `httptest.Server` 執行**（離線快速驗證）；加上 `-live` flag 才會依 `.env` 的 `OPENROUTER_APIKEY` 與 `e2e/*/config.json` 呼叫真實 API。
+[`e2e/e2e_test.go`](e2e/e2e_test.go) **runs offline by default using recorded responses in `e2e/fixtures/` against a local `httptest.Server`**. Pass `-live` to execute against the real API configured via `.env` (`OPENROUTER_APIKEY`) and `e2e/*/config.json`.
 
-- `e2e/data/`：測試腳本（`e2e_scene_ver1.txt`、`e2e_scene_ver2.txt`）與初始種子字典 `seed_entities.json`
-- `e2e/fixtures/`：保留下來的 raw Responses API JSON fixtures（`recognize_001.json`、`translate_001.json`～`translate_004.json`）
-- `e2e/recognize/`：實體辨識設定 `config.json` 與單步測試輸出目錄
-- `e2e/translate/`：翻譯設定 `config.json` 與單步測試輸出目錄
-- `e2e/entity/`：`entity_dict.json` 管理測試目錄
+- `e2e/data/`: Sample scripts (`e2e_scene_ver1.txt`, `e2e_scene_ver2.txt`) and initial seed dictionary `seed_entities.json`
+- `e2e/fixtures/`: Recorded raw Responses API JSON fixtures (`recognize_001.json`, `translate_001.json`–`translate_004.json`)
+- `e2e/recognize/`: Entity recognition config (`config.json`) and stage output directory
+- `e2e/translate/`: Translation config (`config.json`) and stage output directory
+- `e2e/entity/`: `entity_dict.json` test directory
 
 ```bash
-# 預設離線 E2E（fixture + httptest.Server）
+# Default offline E2E (fixtures + httptest.Server)
 task e2e
-# 或 go test -v -count=1 ./e2e
+# or: go test -v -count=1 ./e2e
 
-# 呼叫真實 API 跑 E2E（讀取 .env 中的 OPENROUTER_APIKEY）
+# Live API E2E (reads OPENROUTER_APIKEY from .env)
 task e2e:live
-# 或 go test -v -count=1 ./e2e -live
+# or: go test -v -count=1 ./e2e -live
 
-# 呼叫真實 API 並更新 e2e/fixtures/
+# Call live API and refresh e2e/fixtures/
 task e2e:record
 
-# 個別階段 CLI 測試（針對真實 API 並保留 raw response）
+# Individual live CLI stage tasks
 task e2e:entity:reset
 task e2e:hashsum
 task e2e:extract
@@ -269,3 +344,7 @@ task e2e:run
 task e2e:entity:insert
 task e2e:pipe
 ```
+
+## License
+
+[MIT](LICENSE)

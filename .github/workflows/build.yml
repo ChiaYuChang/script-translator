@@ -3,7 +3,8 @@
 # Tag policy (locked): version tags ONLY (vX.Y.Z) — main/dev pushes
 # build nothing.
 #   - git tag vX.Y.Z -> run Go tests/vet, build 4 platform binaries,
-#                      generate SHA256SUMS, and publish GitHub Release.
+#                      generate SHA256SUMS, publish GitHub Release, and
+#                      update flake.nix on the default branch.
 name: build
 "on":
   push:
@@ -136,3 +137,54 @@ jobs:
           artifactErrorsFailBuild: true
           artifacts: "dist/script-translator-*,dist/SHA256SUMS"
           token: ${{ secrets.GITHUB_TOKEN }}
+
+  update-flake:
+    needs: [verify, release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check artifact runtime
+        id: artifact
+        run: |
+          if [[ "${ACT:-}" == "true" && -z "${ACTIONS_RUNTIME_TOKEN:-}" ]]; then
+            echo "act: --artifact-server-path not set; skipping flake update check"
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v4
+        if: ${{ !env.ACT && steps.artifact.outputs.enabled == 'true' }}
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/checkout@v4
+        if: ${{ env.ACT && steps.artifact.outputs.enabled == 'true' }}
+      - uses: actions/download-artifact@v4
+        if: ${{ steps.artifact.outputs.enabled == 'true' }}
+        with:
+          pattern: script-translator-*
+          path: dist
+          merge-multiple: true
+      - name: Update flake.nix
+        if: ${{ steps.artifact.outputs.enabled == 'true' }}
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          bash ./scripts/update-flake.sh "$VERSION" dist
+          rm -rf dist
+      - name: Commit and push flake.nix
+        if: ${{ !env.ACT && steps.artifact.outputs.enabled == 'true' }}
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          if git diff --quiet flake.nix; then
+            echo "flake.nix already up to date for $VERSION"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add flake.nix
+          git commit -m "chore(nix): update flake.nix to ${VERSION}"
+          git pull --rebase origin "${{ github.event.repository.default_branch }}"
+          git push origin "HEAD:${{ github.event.repository.default_branch }}"
