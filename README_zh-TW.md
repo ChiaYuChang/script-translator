@@ -42,7 +42,7 @@ NixOS / Home Manager 可作為 flake input 引入：
   programs.script-translator = {
     enable = true;
     # 選填：非空時會自動產生 config.json（Linux: ~/.config/script-translator/config.json，macOS: ~/Library/Application Support/script-translator/config.json）
-    # 注意 Nix store 為全域可讀，建議使用 api_key_env 而非明文 api_key
+    # 注意 Nix store 為全域可讀，建議搭配 sops-nix / agenix 使用 api_key_file 或使用 api_key_env，勿明文寫入 api_key
     settings = {
       language = {
         from = "Japanese";
@@ -51,7 +51,8 @@ NixOS / Home Manager 可作為 flake input 引入：
       };
       provider = {
         base_url = "https://api.openai.com/v1";
-        api_key_env = "OPENAI_API_KEY";
+        api_key_file = "/run/secrets/openai_api_key";
+        # api_key_env = "OPENAI_API_KEY";
         wait_time = 1;
         retry_time = 5;
       };
@@ -155,7 +156,8 @@ CLI 透過 [`config.Load`](internal/config/config.go) 讀取 JSON 設定檔，�
 | `language` | `to` | 否 | `"Traditional Chinese"` | 填入 prompt 模板的目標翻譯語言 |
 | `language` | `location` | 否 | 省略 `language` 時為 `"Taiwan (zh-TW)"` | 選填的目標地區／語系慣用（若手動設定 `language` 且未填 `location`，則不會自動套用） |
 | `provider` | `base_url` | 否 | — | 自訂 OpenAI-compatible API endpoint（須為 `http` / `https` URL） |
-| `provider` | `api_key` | 否 | — | 直接指定 API key（會覆蓋 `api_key_env`） |
+| `provider` | `api_key` | 否 | — | 直接指定 API key（優先權高於 `api_key_file` 與 `api_key_env`） |
+| `provider` | `api_key_file` | 否 | — | 存放 API key 的檔案路徑（支援 `~` 展開，優先權高於 `api_key_env`；適合 NixOS / Home Manager secrets） |
 | `provider` | `api_key_env` | 否 | `"OPENAI_API_KEY"` | 讀取 API key 的環境變數名稱 |
 | `provider` | `wait_time` | 否 | `0` | 每次 LLM 呼叫／翻譯 batch 之間及一般錯誤重試前的等待秒數（`0` 表示不等待） |
 | `provider` | `retry_time` | 否 | `0` | 遇到 HTTP `429`、`5xx`、傳輸層 `unexpected EOF`／`EOF` 或 `net.Error`逾時時的指數退避基準秒數（依序等待 `retry_time * 2^0`, `2^1`, ...；翻譯於 `unexpected EOF` 時還會將 `batch_size` 動態縮小為 `* 9 / 10`，最小為 `1`，並重算 `total_batch`） |

@@ -1444,3 +1444,67 @@ func TestScriptRunCustomLanguageAndExamples(t *testing.T) {
 		t.Fatalf("unexpected translate instructions:\n%s", capturedTranslateInstructions)
 	}
 }
+
+func TestScriptRecognizeUsesAPIKeyFile(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	t.Setenv("OPENAI_API_KEY", "wrong-env-key")
+
+	keyPath := filepath.Join(fakeHome, "api_key")
+	if err := os.WriteFile(keyPath, []byte("secret-from-file\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.MarshalWrite(w, map[string]any{
+			"id":     "resp_keyfile",
+			"object": "response",
+			"status": "completed",
+			"output": []map[string]any{{
+				"type":    "message",
+				"status":  "completed",
+				"role":    "assistant",
+				"content": []map[string]any{{"type": "output_text", "text": `{"entity":[]}`}},
+			}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}))
+	defer srv.Close()
+
+	inPath := writeTestScript(t, fakeHome)
+	cfgPath := filepath.Join(fakeHome, "config.json")
+	cfgRaw := mustMarshalJSONForTest(t, map[string]any{
+		"provider": map[string]any{
+			"base_url":     srv.URL + "/v1",
+			"api_key_file": "~/api_key",
+		},
+		"entity_recognition": map[string]any{"model": "gpt-entity", "max_attempt": 1},
+		"translation":        map[string]any{"model": "gpt-translate", "batch_size": 10, "max_attempt": 1},
+	})
+	if err := os.WriteFile(cfgPath, cfgRaw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout bytes.Buffer
+	cmd := newRootCmd(cliDeps{
+		stdin:      &bytes.Buffer{},
+		stdout:     &stdout,
+		stderr:     &bytes.Buffer{},
+		stdinIsTTY: func() bool { return false },
+	})
+	cmd.SetArgs([]string{
+		"script", "recognize",
+		"-c", cfgPath,
+		"-i", inPath,
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("script recognize failed: %v", err)
+	}
+	if gotAuth != "Bearer secret-from-file" {
+		t.Fatalf("Authorization = %q, want %q", gotAuth, "Bearer secret-from-file")
+	}
+}

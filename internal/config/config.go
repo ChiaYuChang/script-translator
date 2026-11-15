@@ -31,17 +31,35 @@ const (
 // ProviderConfig defines connection and credential settings for an
 // OpenAI-compatible Responses API endpoint.
 type ProviderConfig struct {
-	BaseURL   string `json:"base_url,omitzero" jsonschema:"Optional OpenAI-compatible API base URL"`
-	APIKey    string `json:"api_key,omitzero" jsonschema:"Optional inline API key overriding api_key_env"`
-	APIKeyEnv string `json:"api_key_env,omitzero" jsonschema:"Environment variable name holding the API key"`
-	WaitTime  int    `json:"wait_time,omitzero" jsonschema:"Seconds to wait between LLM calls/batches (0 disables pacing)"`
-	RetryTime int    `json:"retry_time,omitzero" jsonschema:"Base seconds for exponential backoff on 429/5xx retries (0 disables backoff)"`
+	BaseURL    string `json:"base_url,omitzero" jsonschema:"Optional OpenAI-compatible API base URL"`
+	APIKey     string `json:"api_key,omitzero" jsonschema:"Optional inline API key overriding api_key_file and api_key_env"`
+	APIKeyFile string `json:"api_key_file,omitzero" jsonschema:"Optional file path holding the API key (supports ~ home expansion, overrides api_key_env)"`
+	APIKeyEnv  string `json:"api_key_env,omitzero" jsonschema:"Environment variable name holding the API key"`
+	WaitTime   int    `json:"wait_time,omitzero" jsonschema:"Seconds to wait between LLM calls/batches (0 disables pacing)"`
+	RetryTime  int    `json:"retry_time,omitzero" jsonschema:"Base seconds for exponential backoff on 429/5xx retries (0 disables backoff)"`
 }
 
-// ResolveAPIKey returns the inline APIKey when configured, otherwise reading the
-// environment variable named by APIKeyEnv.
+// ResolveAPIKey resolves the API key using precedence:
+// 1. inline APIKey
+// 2. file path in APIKeyFile (supports ~ home expansion)
+// 3. environment variable named by APIKeyEnv
 func (p ProviderConfig) ResolveAPIKey() (string, error) {
 	if key := strings.TrimSpace(p.APIKey); key != "" {
+		return key, nil
+	}
+	if filePath := strings.TrimSpace(p.APIKeyFile); filePath != "" {
+		resolvedPath, err := pathutil.ExpandHome(filePath)
+		if err != nil {
+			return "", fmt.Errorf("config: resolve api_key_file %q: %w", filePath, err)
+		}
+		data, err := os.ReadFile(resolvedPath) // #nosec G304 -- api_key_file path is explicitly configured by user
+		if err != nil {
+			return "", fmt.Errorf("config: read api_key_file %q: %w", resolvedPath, err)
+		}
+		key := strings.TrimSpace(string(data))
+		if key == "" {
+			return "", fmt.Errorf("config: api_key_file %q is empty", resolvedPath)
+		}
 		return key, nil
 	}
 	envName := strings.TrimSpace(p.APIKeyEnv)
@@ -64,6 +82,7 @@ func (p ProviderConfig) LogValue() slog.Value {
 	return slog.GroupValue(
 		slog.String("base_url", p.BaseURL),
 		slog.String("api_key", apiKey),
+		slog.String("api_key_file", p.APIKeyFile),
 		slog.String("api_key_env", p.APIKeyEnv),
 	)
 }
@@ -288,6 +307,7 @@ func (c *Config) normalize() {
 	c.Language.Normalize()
 	c.Provider.BaseURL = strings.TrimSpace(c.Provider.BaseURL)
 	c.Provider.APIKey = strings.TrimSpace(c.Provider.APIKey)
+	c.Provider.APIKeyFile = strings.TrimSpace(c.Provider.APIKeyFile)
 	c.Provider.APIKeyEnv = strings.TrimSpace(c.Provider.APIKeyEnv)
 	c.EntityRecognition.Model = strings.TrimSpace(c.EntityRecognition.Model)
 	c.Translation.Model = strings.TrimSpace(c.Translation.Model)
@@ -300,6 +320,13 @@ func (c *Config) resolvePaths() error {
 		return fmt.Errorf("config: cache_dir: %w", err)
 	}
 	c.CacheDir = cacheDir
+	if c.Provider.APIKeyFile != "" {
+		keyFile, err := pathutil.ExpandHome(c.Provider.APIKeyFile)
+		if err != nil {
+			return fmt.Errorf("config: provider.api_key_file: %w", err)
+		}
+		c.Provider.APIKeyFile = keyFile
+	}
 	return c.Observation.ResolvePaths()
 }
 
@@ -315,8 +342,8 @@ func (c Config) Validate() error {
 			return fmt.Errorf("invalid provider.base_url %q", c.Provider.BaseURL)
 		}
 	}
-	if c.Provider.APIKey == "" && c.Provider.APIKeyEnv == "" {
-		return errors.New("provider requires api_key or api_key_env")
+	if c.Provider.APIKey == "" && c.Provider.APIKeyFile == "" && c.Provider.APIKeyEnv == "" {
+		return errors.New("provider requires api_key, api_key_file, or api_key_env")
 	}
 	if c.Provider.WaitTime < 0 {
 		return fmt.Errorf("provider.wait_time must be non-negative (got %d)", c.Provider.WaitTime)

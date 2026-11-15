@@ -193,13 +193,28 @@ func TestParseValidationErrors(t *testing.T) {
 }
 
 func TestResolveAPIKey(t *testing.T) {
-	pInline := ProviderConfig{APIKey: " sk-inline ", APIKeyEnv: "TEST_IGNORED_KEY"}
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	keyFile := filepath.Join(fakeHome, "api.key")
+	if err := os.WriteFile(keyFile, []byte(" sk-from-file\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CUSTOM_OPENAI_KEY", " sk-from-env ")
+
+	// Precedence: inline > api_key_file > api_key_env.
+	pInline := ProviderConfig{APIKey: " sk-inline ", APIKeyFile: keyFile, APIKeyEnv: "CUSTOM_OPENAI_KEY"}
 	key, err := pInline.ResolveAPIKey()
 	if err != nil || key != "sk-inline" {
 		t.Fatalf("expected inline key, got (%q, %v)", key, err)
 	}
 
-	t.Setenv("CUSTOM_OPENAI_KEY", " sk-from-env ")
+	pFile := ProviderConfig{APIKeyFile: "~/api.key", APIKeyEnv: "CUSTOM_OPENAI_KEY"}
+	key, err = pFile.ResolveAPIKey()
+	if err != nil || key != "sk-from-file" {
+		t.Fatalf("expected file key overriding env, got (%q, %v)", key, err)
+	}
+
 	pEnv := ProviderConfig{APIKeyEnv: "CUSTOM_OPENAI_KEY"}
 	key, err = pEnv.ResolveAPIKey()
 	if err != nil || key != "sk-from-env" {
@@ -210,6 +225,21 @@ func TestResolveAPIKey(t *testing.T) {
 	pEmpty := ProviderConfig{APIKeyEnv: "EMPTY_OPENAI_KEY"}
 	if _, err := pEmpty.ResolveAPIKey(); err == nil {
 		t.Fatal("expected error for blank env var")
+	}
+
+	// Explicit api_key_file errors must not silently fall back to api_key_env.
+	pMissingFile := ProviderConfig{APIKeyFile: filepath.Join(fakeHome, "missing.key"), APIKeyEnv: "CUSTOM_OPENAI_KEY"}
+	if _, err := pMissingFile.ResolveAPIKey(); err == nil {
+		t.Fatal("expected missing api_key_file to fail without falling back to env")
+	}
+
+	emptyKeyFile := filepath.Join(fakeHome, "empty.key")
+	if err := os.WriteFile(emptyKeyFile, []byte("  \n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pBlankFile := ProviderConfig{APIKeyFile: emptyKeyFile, APIKeyEnv: "CUSTOM_OPENAI_KEY"}
+	if _, err := pBlankFile.ResolveAPIKey(); err == nil {
+		t.Fatal("expected blank api_key_file to fail without falling back to env")
 	}
 }
 
@@ -279,6 +309,7 @@ func TestConfigExpandsTildePaths(t *testing.T) {
 	}
 	cfgRaw := `{
 		"cache_dir": "~/.config/script-translator/cache",
+		"provider": {"api_key_file": "~/.config/script-translator/api_key", "api_key_env": ""},
 		"entity_recognition": {"model": "gpt-entity"},
 		"translation": {"model": "gpt-translate"},
 		"observation": {
@@ -299,10 +330,14 @@ func TestConfigExpandsTildePaths(t *testing.T) {
 		t.Fatalf("Load with tilde path failed: %v", err)
 	}
 	wantCache := filepath.Join(fakeHome, ".config", "script-translator", "cache")
+	wantKeyFile := filepath.Join(fakeHome, ".config", "script-translator", "api_key")
 	wantLog := filepath.Join(fakeHome, ".config", "script-translator", "run.jsonl")
 	wantMetric := filepath.Join(fakeHome, ".config", "script-translator", "usage.jsonl")
 	if loaded.CacheDir != wantCache {
 		t.Fatalf("CacheDir = %q, want %q", loaded.CacheDir, wantCache)
+	}
+	if loaded.Provider.APIKeyFile != wantKeyFile {
+		t.Fatalf("Provider.APIKeyFile = %q, want %q", loaded.Provider.APIKeyFile, wantKeyFile)
 	}
 	if loaded.Observation.Log.File.File != wantLog {
 		t.Fatalf("Log.File.File = %q, want %q", loaded.Observation.Log.File.File, wantLog)

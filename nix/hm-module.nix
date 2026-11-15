@@ -30,7 +30,9 @@ in {
           };
           provider = {
             base_url = "https://api.openai.com/v1";
-            api_key_env = "OPENAI_API_KEY";
+            api_key_file = "/run/secrets/openai_api_key";
+            # Or fall back to an environment variable:
+            # api_key_env = "OPENAI_API_KEY";
             wait_time = 1;
             retry_time = 5;
           };
@@ -48,8 +50,9 @@ in {
         when non-empty. Supports top-level `language` (`from`, `to`, optional
         `location`), `provider`, `entity_recognition` (including optional
         few-shot `example`), `translation` (including optional few-shot
-        `example`), and `observation`. Prefer `provider.api_key_env` over inline
-        `provider.api_key` since Nix store files are world-readable.
+        `example`), and `observation`. Prefer `provider.api_key_file` (e.g., for
+        sops-nix/agenix) or `provider.api_key_env` over inline `provider.api_key`
+        since Nix store files are world-readable.
       '';
     };
   };

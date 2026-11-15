@@ -43,7 +43,7 @@ For NixOS or Home Manager, add it as a flake input:
     enable = true;
     # Optional: when non-empty, declaratively generates config.json
     # (Linux: ~/.config/script-translator/config.json, macOS: ~/Library/Application Support/script-translator/config.json).
-    # Prefer api_key_env over inline api_key because Nix store files are world-readable.
+    # Prefer api_key_file (e.g. sops-nix/agenix) or api_key_env over inline api_key because Nix store files are world-readable.
     settings = {
       language = {
         from = "Japanese";
@@ -52,7 +52,8 @@ For NixOS or Home Manager, add it as a flake input:
       };
       provider = {
         base_url = "https://api.openai.com/v1";
-        api_key_env = "OPENAI_API_KEY";
+        api_key_file = "/run/secrets/openai_api_key";
+        # api_key_env = "OPENAI_API_KEY";
         wait_time = 1;
         retry_time = 5;
       };
@@ -156,7 +157,8 @@ Configuration is loaded and validated against a strict JSON Schema via [`config.
 | `language` | `to` | No | `"Traditional Chinese"` | Target localization language injected into prompt templates |
 | `language` | `location` | No | `"Taiwan (zh-TW)"` (when `language` omitted) | Optional target region/locale (omitted by default when `language` is explicitly configured) |
 | `provider` | `base_url` | No | — | Custom OpenAI-compatible API endpoint (`http` / `https` URL) |
-| `provider` | `api_key` | No | — | Explicit API key (overrides `api_key_env`) |
+| `provider` | `api_key` | No | — | Explicit inline API key (overrides `api_key_file` and `api_key_env`) |
+| `provider` | `api_key_file` | No | — | Path to file containing the API key (supports `~` expansion; overrides `api_key_env`; ideal for NixOS / Home Manager secrets) |
 | `provider` | `api_key_env` | No | `"OPENAI_API_KEY"` | Environment variable name holding the API key |
 | `provider` | `wait_time` | No | `0` | Delay in seconds between LLM calls / translation batches and before retrying general errors (`0` disables waiting) |
 | `provider` | `retry_time` | No | `0` | Base delay in seconds for exponential backoff (`retry_time * 2^0`, `2^1`, ...) on HTTP `429`, `5xx`, transport `unexpected EOF` / `EOF`, and `net.Error` timeouts; on `unexpected EOF`, translation also dynamically shrinks `batch_size` (`max(batch * 9 / 10, 1)`) and recalculates `total_batch` |
