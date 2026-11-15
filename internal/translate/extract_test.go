@@ -217,12 +217,59 @@ func TestExtractSplitAcrossCommandEmitsWarningAndKeepsUnits(t *testing.T) {
 	}
 }
 
-func TestExtractInvalidOS(t *testing.T) {
-	for _, text := range []string{"「AAA」", "AAA」", "「AAA"} {
-		t.Run(text, func(t *testing.T) {
-			_, _, err := extractSource(t, "<NAME_PLATE>\n"+text+"\n")
-			if err == nil || !strings.Contains(err.Error(), "line 0: invalid OS format") {
-				t.Errorf("expected invalid OS format, got %v", err)
+func TestExtractOSWithQuotes(t *testing.T) {
+	t.Run("balanced unnamed quotes split cleanly without warnings", func(t *testing.T) {
+		script, err := ParseBytes([]byte("<NAME_PLATE>\n「AAA」「BBB」\n<PAUSE>\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		units, retained, warnings, err := ExtractWithWarnings(script)
+		if err != nil {
+			t.Fatalf("expected balanced quotes under empty NAME_PLATE to extract cleanly, got %v", err)
+		}
+		if len(warnings) != 0 {
+			t.Fatalf("expected no warnings for balanced quotes, got %#v", warnings)
+		}
+		wantUnits := []model.TranslateUnit{
+			{Index: 0, LineIndex: 0, Speaker: "", Text: "「AAA」"},
+			{Index: 1, LineIndex: 0, Speaker: "", Text: "「BBB」"},
+		}
+		if !reflect.DeepEqual(units, wantUnits) {
+			t.Fatalf("units mismatch:\ngot  %#v\nwant %#v", units, wantUnits)
+		}
+		if len(retained) != 1 || retained[0].String() != "<PAUSE>\n" {
+			t.Fatalf("unexpected retained: %#v", retained)
+		}
+
+		assembled, err := Assemble(units, model.TranslateResponse{
+			{Index: 0, Text: "「甲」"},
+			{Index: 1, Text: "「乙」"},
+		}, retained, nil)
+		if err != nil {
+			t.Fatalf("Assemble failed: %v", err)
+		}
+		wantAssembled := "<NAME_PLATE>\n「甲」\n「乙」\n<PAUSE>\n"
+		if assembled != wantAssembled {
+			t.Fatalf("assembled mismatch:\ngot:\n%s\nwant:\n%s", assembled, wantAssembled)
+		}
+	})
+
+	for _, text := range []string{"「待って」と声がした。", "AAA」", "「AAA"} {
+		t.Run("fallback_warning_"+text, func(t *testing.T) {
+			script, err := ParseBytes([]byte("<NAME_PLATE>\n" + text + "\n"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			units, _, warnings, err := ExtractWithWarnings(script)
+			if err != nil {
+				t.Fatalf("expected fallback extraction to succeed, got %v", err)
+			}
+			wantUnits := []model.TranslateUnit{{Index: 0, LineIndex: 0, Speaker: "", Text: text}}
+			if !reflect.DeepEqual(units, wantUnits) {
+				t.Fatalf("units mismatch: got %#v, want %#v", units, wantUnits)
+			}
+			if len(warnings) != 1 || !strings.Contains(warnings[0], "line 0 (OS)") {
+				t.Fatalf("expected 1 OS warning mentioning line 0, got %#v", warnings)
 			}
 		})
 	}

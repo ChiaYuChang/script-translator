@@ -67,26 +67,36 @@ func ExtractWithWarnings(script model.Script) ([]model.TranslateUnit, []model.Un
 		}
 
 		content := strings.Join(parts, "")
+		var texts []string
 		if speaker == "" {
-			// OS: no enclosing dialogue quotes.
-			if strings.HasPrefix(content, "「") ||
-				strings.HasSuffix(content, "」") {
-				return nil, nil, nil, fmt.Errorf(
-					"line %d: invalid OS format",
-					line.Index,
-				)
+			// OS: normally plain narration, though unnamed/off-screen speech or narration quoting
+			// 「...」 can also appear under an empty <NAME_PLATE>. Split balanced utterances cleanly;
+			// otherwise keep the block as 1 unit (and warn on unbalanced/mixed leading/trailing quotes).
+			if strings.HasPrefix(content, "「") || strings.HasPrefix(content, "（") {
+				if segs, err := extractDialogue(content); err == nil {
+					texts = segs
+				} else {
+					warnings = append(warnings, fmt.Sprintf(
+						"line %d (OS): could not split quoted text (%v); keeping block as 1 unit",
+						line.Index, err,
+					))
+					texts = []string{content}
+				}
+			} else {
+				if strings.HasSuffix(content, "」") {
+					warnings = append(warnings, fmt.Sprintf(
+						"line %d (OS): trailing closing quote under empty NAME_PLATE; keeping block as 1 unit",
+						line.Index,
+					))
+				}
+				texts = []string{content}
 			}
-			translations = append(translations, model.TranslateUnit{
-				Index:     len(translations),
-				LineIndex: line.Index,
-				Speaker:   speaker,
-				Text:      content,
-			})
 		} else {
 			// Dialogue: each 「...」 or （...） utterance becomes one independent TranslateUnit.
 			// If delimiters are unbalanced (for instance split by a command), fall back to
 			// keeping the entire block as a single unit and emit a warning.
-			texts, err := extractDialogue(content)
+			var err error
+			texts, err = extractDialogue(content)
 			if err != nil {
 				warnings = append(warnings, fmt.Sprintf(
 					"line %d (speaker %q): could not split utterances (%v); keeping block as 1 unit",
@@ -94,14 +104,14 @@ func ExtractWithWarnings(script model.Script) ([]model.TranslateUnit, []model.Un
 				))
 				texts = []string{content}
 			}
-			for _, seg := range texts {
-				translations = append(translations, model.TranslateUnit{
-					Index:     len(translations),
-					LineIndex: line.Index,
-					Speaker:   speaker,
-					Text:      seg,
-				})
-			}
+		}
+		for _, seg := range texts {
+			translations = append(translations, model.TranslateUnit{
+				Index:     len(translations),
+				LineIndex: line.Index,
+				Speaker:   speaker,
+				Text:      seg,
+			})
 		}
 		i = j
 	}
