@@ -50,7 +50,7 @@ Rules:
 - Each "text" must be a non-empty {{.Language.To}} string.
 - Use the mappings in "Entries:" consistently. Do not independently reinterpret existing translated names.
 - Preserve placeholders, variable references, markup, control codes, file paths, URLs, and other technical literals appearing inside the source text.
-- Preserve outer dialogue quotation marks 「...」 or monologue parentheses （...） exactly when present in the source "text" (return 「...」 for 「...」, full-width （...） for （...）, never convert （） to half-width (), and never wrap unbracketed narration/OS lines in 「」). Do not output script commands such as <NAME_PLATE>.
+- Preserve outer dialogue quotation marks 「...」, 『...』, or monologue parentheses （...） exactly when present in the source "text" (return 「...」 for 「...」, 『...』 for 『...』, full-width （...） for （...）, never convert （） to half-width (), and never wrap unbracketed narration/OS lines in 「」 or 『』). Do not output script commands such as <NAME_PLATE>.
 - Do not include "name", "entity", explanations, markdown, or any fields outside the specified output schema.
 
 EXAMPLE INPUT

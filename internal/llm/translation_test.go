@@ -713,6 +713,13 @@ func TestTranslateRejectsMismatchedOuterDelimitersAndRetries(t *testing.T) {
 			wantErrSub: "must preserve outer 「」 wrapper",
 		},
 		{
+			name:       "dropped double corner quotes triggers retry",
+			sourceText: "『おはよう』",
+			badText:    "「早安」",
+			goodText:   "『早安』",
+			wantErrSub: "must preserve outer 『』 wrapper",
+		},
+		{
 			name:       "half-width monologue parens rejected",
 			sourceText: "（したいな……）",
 			badText:    "(好想做啊……)",

@@ -116,6 +116,11 @@ func TestExtractMonologueAndMixedBrackets(t *testing.T) {
 「XXXX（OO）XXX」
 （XXX「OO」）
 「彼は「うん」と言った」
+『XXX』『YYY』『ZZZ』
+『AAA「BBB」』
+<PAUSE>
+<NAME_PLATE>ネット民
+　『草』　『わかる』　『きたー！』
 <PAUSE>
 `
 
@@ -130,12 +135,19 @@ func TestExtractMonologueAndMixedBrackets(t *testing.T) {
 		{Index: 2, LineIndex: 7, Speaker: "俺", Text: "「XXXX（OO）XXX」"},
 		{Index: 3, LineIndex: 7, Speaker: "俺", Text: "（XXX「OO」）"},
 		{Index: 4, LineIndex: 7, Speaker: "俺", Text: "「彼は「うん」と言った」"},
+		{Index: 5, LineIndex: 7, Speaker: "俺", Text: "『XXX』"},
+		{Index: 6, LineIndex: 7, Speaker: "俺", Text: "『YYY』"},
+		{Index: 7, LineIndex: 7, Speaker: "俺", Text: "『ZZZ』"},
+		{Index: 8, LineIndex: 7, Speaker: "俺", Text: "『AAA「BBB」』"},
+		{Index: 9, LineIndex: 14, Speaker: "ネット民", Text: "『草』"},
+		{Index: 10, LineIndex: 14, Speaker: "ネット民", Text: "『わかる』"},
+		{Index: 11, LineIndex: 14, Speaker: "ネット民", Text: "『きたー！』"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("translations mismatch:\ngot:  %#v\nwant: %#v", got, want)
 	}
-	if len(retained) != 3 {
-		t.Fatalf("expected 3 retained <PAUSE> lines, got %d", len(retained))
+	if len(retained) != 4 {
+		t.Fatalf("expected 4 retained <PAUSE> lines, got %d", len(retained))
 	}
 }
 
@@ -148,6 +160,9 @@ func TestExtractInvalidDialogue(t *testing.T) {
 		{"missing opening", "AAA」", "unexpected content before dialogue 1"},
 		{"missing closing", "「AAA", "unclosed dialogue block"},
 		{"empty dialogue", "「」", "empty dialogue block"},
+		{"empty double quote", "『』", "empty dialogue block"},
+		{"unclosed double quote", "『AAA", "unclosed dialogue block"},
+		{"mismatched double quote", "『AAA」", "mismatched closing bracket"},
 		{"empty monologue", "（）", "empty dialogue block"},
 		{"unclosed monologue", "（AAA", "unclosed dialogue block"},
 		{"missing opening monologue", "AAA）", "unexpected content before dialogue 1"},
@@ -254,7 +269,7 @@ func TestExtractOSWithQuotes(t *testing.T) {
 		}
 	})
 
-	for _, text := range []string{"「待って」と声がした。", "AAA」", "「AAA"} {
+	for _, text := range []string{"「待って」と声がした。", "AAA」", "AAA』", "「AAA"} {
 		t.Run("fallback_warning_"+text, func(t *testing.T) {
 			script, err := ParseBytes([]byte("<NAME_PLATE>\n" + text + "\n"))
 			if err != nil {

@@ -3,13 +3,14 @@ package translate
 import (
 	"fmt"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"go-script-translate/internal/model"
 )
 
 // Extract parses dialogue utterances and retained skeleton lines from script.
-// Irregular speaker blocks that cannot be split into balanced 「...」/（...）
+// Irregular speaker blocks that cannot be split into balanced 「...」/『...』/（...）
 // utterances fall back to a single unit; use ExtractWithWarnings to inspect warnings.
 func Extract(script model.Script) ([]model.TranslateUnit, []model.Unit, error) {
 	units, retained, _, err := ExtractWithWarnings(script)
@@ -18,7 +19,7 @@ func Extract(script model.Script) ([]model.TranslateUnit, []model.Unit, error) {
 
 // ExtractWithWarnings parses dialogue utterances and retained skeleton lines from
 // script, returning non-fatal warnings when a dialogue block cannot be split by
-// outer 「...」/（...） delimiters and falls back to a single TranslateUnit.
+// outer 「...」/『...』/（...） delimiters and falls back to a single TranslateUnit.
 func ExtractWithWarnings(script model.Script) ([]model.TranslateUnit, []model.Unit, []string, error) {
 	translations := make([]model.TranslateUnit, 0)
 	retained := make([]model.Unit, 0, len(script.Lines))
@@ -70,9 +71,9 @@ func ExtractWithWarnings(script model.Script) ([]model.TranslateUnit, []model.Un
 		var texts []string
 		if speaker == "" {
 			// OS: normally plain narration, though unnamed/off-screen speech or narration quoting
-			// 「...」 can also appear under an empty <NAME_PLATE>. Split balanced utterances cleanly;
+			// 「...」/『...』 can also appear under an empty <NAME_PLATE>. Split balanced utterances cleanly;
 			// otherwise keep the block as 1 unit (and warn on unbalanced/mixed leading/trailing quotes).
-			if strings.HasPrefix(content, "「") || strings.HasPrefix(content, "（") {
+			if startsWithDialogueOpen(content) {
 				if segs, err := extractDialogue(content); err == nil {
 					texts = segs
 				} else {
@@ -83,7 +84,7 @@ func ExtractWithWarnings(script model.Script) ([]model.TranslateUnit, []model.Un
 					texts = []string{content}
 				}
 			} else {
-				if strings.HasSuffix(content, "」") {
+				if strings.HasSuffix(content, "」") || strings.HasSuffix(content, "』") {
 					warnings = append(warnings, fmt.Sprintf(
 						"line %d (OS): trailing closing quote under empty NAME_PLATE; keeping block as 1 unit",
 						line.Index,
@@ -92,7 +93,7 @@ func ExtractWithWarnings(script model.Script) ([]model.TranslateUnit, []model.Un
 				texts = []string{content}
 			}
 		} else {
-			// Dialogue: each 「...」 or （...） utterance becomes one independent TranslateUnit.
+			// Dialogue: each 「...」, 『...』, or （...） utterance becomes one independent TranslateUnit.
 			// If delimiters are unbalanced (for instance split by a command), fall back to
 			// keeping the entire block as a single unit and emit a warning.
 			var err error
@@ -175,7 +176,10 @@ func extractDialogue(text string) ([]string, error) {
 
 	for i, r := range text {
 		if len(stack) == 0 {
-			expectedClose, isOpen := matchingDialogueClose(r)
+			if unicode.IsSpace(r) {
+				continue
+			}
+			expectedClose, isOpen := dialogueBrackets[r]
 			if !isOpen {
 				return nil, fmt.Errorf(
 					"%w: unexpected content before dialogue %d at byte [%d:%d]: %q",
@@ -192,12 +196,12 @@ func extractDialogue(text string) ([]string, error) {
 			continue
 		}
 
-		if expectedClose, isOpen := matchingDialogueClose(r); isOpen {
+		if expectedClose, isOpen := dialogueBrackets[r]; isOpen {
 			stack = append(stack, expectedClose)
 			continue
 		}
 
-		if isDialogueClose(r) {
+		if _, isClose := dialogueCloseBrackets[r]; isClose {
 			if stack[len(stack)-1] != r {
 				return nil, fmt.Errorf(
 					"%w: mismatched closing bracket %q at byte %d in %q",
@@ -230,21 +234,29 @@ func extractDialogue(text string) ([]string, error) {
 			text[startByte:],
 		)
 	}
+	if len(dialogues) == 0 {
+		return nil, fmt.Errorf("%w: no valid dialogue block found in %q", ErrInvalidDialogueFormat, text)
+	}
 
 	return dialogues, nil
 }
 
-func matchingDialogueClose(openRune rune) (rune, bool) {
-	switch openRune {
-	case '「':
-		return '」', true
-	case '（':
-		return '）', true
-	default:
-		return 0, false
-	}
+var dialogueBrackets = map[rune]rune{
+	'（': '）',
+	'「': '」',
+	'『': '』',
 }
 
-func isDialogueClose(r rune) bool {
-	return r == '」' || r == '）'
+var dialogueCloseBrackets = func() map[rune]rune {
+	m := make(map[rune]rune, len(dialogueBrackets))
+	for openRune, closeRune := range dialogueBrackets {
+		m[closeRune] = openRune
+	}
+	return m
+}()
+
+func startsWithDialogueOpen(s string) bool {
+	r, _ := utf8.DecodeRuneInString(s)
+	_, ok := dialogueBrackets[r]
+	return ok
 }

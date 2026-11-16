@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/openai/openai-go/v3"
@@ -377,21 +378,32 @@ func parseAndValidateTranslationBatch(
 	return ordered, nil
 }
 
+var outerDialogueDelimiters = map[rune]rune{
+	'（': '）',
+	'「': '」',
+	'『': '』',
+}
+
 func validateMatchingOuterDelimiters(source, translated string) error {
 	trimmedSrc := strings.TrimSpace(source)
 	trimmedDst := strings.TrimSpace(translated)
-	for _, pair := range [][2]string{{"「", "」"}, {"（", "）"}} {
-		openMark, closeMark := pair[0], pair[1]
-		if strings.HasPrefix(trimmedSrc, openMark) && strings.HasSuffix(trimmedSrc, closeMark) {
-			if !strings.HasPrefix(trimmedDst, openMark) || !strings.HasSuffix(trimmedDst, closeMark) {
-				return fmt.Errorf("must preserve outer %s%s wrapper", openMark, closeMark)
-			}
-			inner := strings.TrimSuffix(strings.TrimPrefix(trimmedDst, openMark), closeMark)
-			if strings.TrimSpace(inner) == "" {
-				return fmt.Errorf("empty content inside outer %s%s", openMark, closeMark)
-			}
-			return nil
-		}
+	openRune, _ := utf8.DecodeRuneInString(trimmedSrc)
+	closeRune, ok := outerDialogueDelimiters[openRune]
+	if !ok {
+		return nil
+	}
+	lastRune, _ := utf8.DecodeLastRuneInString(trimmedSrc)
+	if lastRune != closeRune {
+		return nil
+	}
+
+	openMark, closeMark := string(openRune), string(closeRune)
+	if !strings.HasPrefix(trimmedDst, openMark) || !strings.HasSuffix(trimmedDst, closeMark) {
+		return fmt.Errorf("must preserve outer %s%s wrapper", openMark, closeMark)
+	}
+	inner := strings.TrimSuffix(strings.TrimPrefix(trimmedDst, openMark), closeMark)
+	if strings.TrimSpace(inner) == "" {
+		return fmt.Errorf("empty content inside outer %s%s", openMark, closeMark)
 	}
 	return nil
 }
