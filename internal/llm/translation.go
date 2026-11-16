@@ -43,6 +43,8 @@ type translationOutput struct {
 	Dialogue model.TranslateBatchOutput `json:"dialogue"`
 }
 
+const minUnexpectedEOFShrinkBatchSize = 10
+
 var translationSchema = MustSchema[translationOutput]()
 
 // TranslateParams configures a Translate call. Defaults belong in config validation;
@@ -178,8 +180,8 @@ func (p *Provider) Translate(
 			var nextTotalBatches int
 			if attempt+1 < param.MaxAttempt {
 				delay, backoffApplied = p.retryDelay(lastErr, attempt)
-				if isUnexpectedEOFError(lastErr) && batchLen > 1 {
-					nextBatchSize = max(batchLen*9/10, 1)
+				if isUnexpectedEOFError(lastErr) && batchLen > minUnexpectedEOFShrinkBatchSize {
+					nextBatchSize = max(batchLen*9/10, minUnexpectedEOFShrinkBatchSize)
 					nextTotalBatches = (batchNum - 1) + TotalBatches(len(req.Dialogue)-start, nextBatchSize)
 				}
 			}

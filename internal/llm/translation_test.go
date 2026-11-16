@@ -1250,7 +1250,7 @@ func TestTranslateUnexpectedEOFShrinksBatchSizeAndUsesBackoff(t *testing.T) {
 			seenBatchSizes = append(seenBatchSizes, len(units))
 
 			if len(seenBatchSizes) == 1 {
-				// First attempt sends 10 units; simulate abrupt upstream disconnect (unexpected EOF).
+				// First attempt sends 11 units; simulate abrupt upstream disconnect (unexpected EOF).
 				hj, ok := w.(http.Hijacker)
 				if !ok {
 					t.Fatal("ResponseWriter does not implement http.Hijacker")
@@ -1282,14 +1282,14 @@ func TestTranslateUnexpectedEOFShrinksBatchSizeAndUsesBackoff(t *testing.T) {
 		}),
 	)
 
-	dialogue := make([]model.TranslateUnit, 10)
+	dialogue := make([]model.TranslateUnit, 11)
 	for i := range dialogue {
 		dialogue[i] = model.TranslateUnit{Index: i, Speaker: "ミナト", Text: "「台詞」"}
 	}
 
 	got, err := p.Translate(context.Background(), model.TranslateRequest{Dialogue: dialogue}, TranslateParams{
 		Model:      "translate-model-v1",
-		BatchSize:  10,
+		BatchSize:  11,
 		MaxAttempt: 3,
 		OnBatchComplete: func(completed []model.TranslatedText) error {
 			checkpoints = append(checkpoints, slices.Clone(completed))
@@ -1299,8 +1299,8 @@ func TestTranslateUnexpectedEOFShrinksBatchSizeAndUsesBackoff(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Translate failed: %v", err)
 	}
-	if len(got) != 10 {
-		t.Fatalf("expected 10 translated units, got %d", len(got))
+	if len(got) != 11 {
+		t.Fatalf("expected 11 translated units, got %d", len(got))
 	}
 	for i, item := range got {
 		if item.Index != i {
@@ -1308,9 +1308,9 @@ func TestTranslateUnexpectedEOFShrinksBatchSizeAndUsesBackoff(t *testing.T) {
 		}
 	}
 
-	// Attempt 1 tries 10 units (total_batch=1) -> unexpected EOF -> shrinks 10*9/10=9
-	// (recalculates total_batch=2) -> batch 1 completes 9 units -> batch 2 finishes remaining 1.
-	wantSizes := []int{10, 9, 1}
+	// Attempt 1 tries 11 units (total_batch=1) -> unexpected EOF -> shrinks max(11*9/10, 10)=10
+	// (recalculates total_batch=2) -> batch 1 completes 10 units -> batch 2 finishes remaining 1.
+	wantSizes := []int{11, 10, 1}
 	if !reflect.DeepEqual(seenBatchSizes, wantSizes) {
 		t.Fatalf("seen batch sizes = %v, want %v", seenBatchSizes, wantSizes)
 	}
@@ -1318,7 +1318,7 @@ func TestTranslateUnexpectedEOFShrinksBatchSizeAndUsesBackoff(t *testing.T) {
 	if !reflect.DeepEqual(slept, wantSlept) {
 		t.Fatalf("recorded sleeps = %v, want %v", slept, wantSlept)
 	}
-	if len(checkpoints) != 2 || len(checkpoints[0]) != 9 || len(checkpoints[1]) != 10 {
+	if len(checkpoints) != 2 || len(checkpoints[0]) != 10 || len(checkpoints[1]) != 11 {
 		t.Fatalf("unexpected checkpoints: %#v", checkpoints)
 	}
 
@@ -1337,8 +1337,8 @@ func TestTranslateUnexpectedEOFShrinksBatchSizeAndUsesBackoff(t *testing.T) {
 	if entries[0]["msg"] != "translation batch attempt failed" ||
 		entries[0]["batch"] != float64(1) ||
 		entries[0]["total_batch"] != float64(1) ||
-		entries[0]["batch_size"] != float64(10) ||
-		entries[0]["next_batch_size"] != float64(9) ||
+		entries[0]["batch_size"] != float64(11) ||
+		entries[0]["next_batch_size"] != float64(10) ||
 		entries[0]["next_total_batch"] != float64(2) ||
 		entries[0]["backoff"] != true {
 		t.Fatalf("unexpected warn log entry: %#v", entries[0])
@@ -1346,14 +1346,69 @@ func TestTranslateUnexpectedEOFShrinksBatchSizeAndUsesBackoff(t *testing.T) {
 	if entries[1]["msg"] != "llm request completed" ||
 		entries[1]["batch"] != float64(1) ||
 		entries[1]["total_batch"] != float64(2) ||
-		entries[1]["batch_size"] != float64(9) {
+		entries[1]["batch_size"] != float64(10) {
 		t.Fatalf("unexpected batch 1 completion log entry: %#v", entries[1])
 	}
 	if entries[2]["msg"] != "llm request completed" ||
 		entries[2]["batch"] != float64(2) ||
 		entries[2]["total_batch"] != float64(2) ||
-		entries[2]["batch_size"] != float64(9) {
+		entries[2]["batch_size"] != float64(10) {
 		t.Fatalf("unexpected batch 2 completion log entry: %#v", entries[2])
+	}
+
+	// Verify batch_size <= 10 does not shrink below 10 on unexpected EOF.
+	var floorSeen []int
+	floorProv := newTestProvider(
+		t,
+		func(w http.ResponseWriter, r *http.Request) {
+			raw, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var req capturedResponseRequest
+			if err := json.Unmarshal(raw, &req); err != nil {
+				t.Fatal(err)
+			}
+			_, inputJSON, ok := strings.Cut(req.Input, "\nInput:\n")
+			if !ok {
+				t.Fatalf("missing Input section:\n%s", req.Input)
+			}
+			var units []translateInputUnit
+			if err := json.Unmarshal([]byte(inputJSON), &units); err != nil {
+				t.Fatal(err)
+			}
+			floorSeen = append(floorSeen, len(units))
+			if len(floorSeen) == 1 {
+				hj, ok := w.(http.Hijacker)
+				if !ok {
+					t.Fatal("ResponseWriter does not implement http.Hijacker")
+				}
+				conn, _, err := hj.Hijack()
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, _ = conn.Write([]byte("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{\"id\":\"partial"))
+				_ = conn.Close()
+				return
+			}
+			out := make([]model.TranslatedText, len(units))
+			for i, u := range units {
+				out[i] = model.TranslatedText{Index: u.Index, Text: "「譯文」"}
+			}
+			writeBatchResponse(t, w, out)
+		},
+		withSleep(func(context.Context, time.Duration) error { return nil }),
+	)
+	gotFloor, err := floorProv.Translate(context.Background(), model.TranslateRequest{Dialogue: dialogue[:10]}, TranslateParams{
+		Model:      "translate-model-v1",
+		BatchSize:  10,
+		MaxAttempt: 2,
+	})
+	if err != nil || len(gotFloor) != 10 {
+		t.Fatalf("floor Translate failed: (%d, %v)", len(gotFloor), err)
+	}
+	if !reflect.DeepEqual(floorSeen, []int{10, 10}) {
+		t.Fatalf("floor seen batch sizes = %v, want [10 10]", floorSeen)
 	}
 }
 
