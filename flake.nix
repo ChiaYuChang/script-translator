@@ -7,19 +7,19 @@
 
   outputs = { self, nixpkgs }:
     let
-      version = "v0.3.0";
+      version = "v0.4.0";
       sources = {
         x86_64-linux = {
           asset = "script-translator-linux-amd64";
-          hash = "sha256-ojnSWWunFaISuTdfOMy75FhMOkWrsFzzEOPZaoZKKI0=";
+          hash = "sha256-jTUyA0bmBHVJy6KDer/78vzphZfM+neUP/qvU/hge/Y=";
         };
         aarch64-linux = {
           asset = "script-translator-linux-arm64";
-          hash = "sha256-S+1DDynR7Z/jOVLviDNzYGdkJYiSVFq1Nf6iOAAQZlM=";
+          hash = "sha256-snMSfuTZPmmcW7HT5gGPW3Z2oQJQi4ZaS9BVKrUc4qk=";
         };
         aarch64-darwin = {
           asset = "script-translator-darwin-arm64";
-          hash = "sha256-h8LuylZ9S3WsOABc9iZS7zBImrugT5OrTgH0/643O5o=";
+          hash = "sha256-c9QYIQkA/U/7cJqrMZPNRdjAKtqe4ylXN64XSnlmzW8=";
         };
       };
 
