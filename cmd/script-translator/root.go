@@ -83,6 +83,7 @@ func newRootCmd(deps cliDeps) *cobra.Command {
 	root.AddCommand(newScriptCmd(deps))
 	root.AddCommand(newEntityCmd(deps))
 	root.AddCommand(newDefaultCmd(deps))
+	root.AddCommand(newPromptCmd(deps))
 	root.AddCommand(newVersionCmd(deps))
 	return root
 }

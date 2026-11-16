@@ -45,11 +45,12 @@ func mustRenderDefaultEntityRecognitionPrompt() string {
 
 // RecognizeEntitiesParams configures a RecognizeEntities call.
 type RecognizeEntitiesParams struct {
-	Model      string                           `json:"model" jsonschema:"Model name for entity recognition"`
-	Dictionary []model.Entity                   `json:"-"`
-	Language   prompt.Language                  `json:"-"`
-	MaxAttempt int                              `json:"max_attempt" jsonschema:"Maximum attempts per entity recognition call"`
-	Example    *prompt.EntityRecognitionExample `json:"example,omitzero" jsonschema:"Optional custom few-shot example for entity recognition"`
+	Model       string                           `json:"model" jsonschema:"Model name for entity recognition"`
+	Dictionary  []model.Entity                   `json:"-"`
+	Language    prompt.Language                  `json:"-"`
+	MaxAttempt  int                              `json:"max_attempt" jsonschema:"Maximum attempts per entity recognition call"`
+	ExampleFile string                           `json:"example_file,omitzero" jsonschema:"Optional path to custom entity recognition example JSON file (supports ~ expansion)"`
+	Example     *prompt.EntityRecognitionExample `json:"-"`
 }
 
 // RecognizeEntities performs a stateless Responses API request. It returns

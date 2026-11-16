@@ -17,14 +17,22 @@ const (
 	DefaultLanguageFrom     = "Japanese"
 	DefaultLanguageTo       = "Traditional Chinese"
 	DefaultLanguageLocation = "Taiwan (zh-TW)"
+
+	KindEntityRecognition = "entity_recognition"
+	KindTranslation       = "translation"
 )
 
 //go:embed templates/*.gotmpl
 var templateFS embed.FS
 
+var templatePaths = map[string]string{
+	KindEntityRecognition: "templates/entity_recognition.gotmpl",
+	KindTranslation:       "templates/translation.gotmpl",
+}
+
 var (
-	entityRecognitionTmpl = template.Must(template.ParseFS(templateFS, "templates/entity_recognition.gotmpl"))
-	translationTmpl       = template.Must(template.ParseFS(templateFS, "templates/translation.gotmpl"))
+	entityRecognitionTmpl = template.Must(template.ParseFS(templateFS, templatePaths[KindEntityRecognition]))
+	translationTmpl       = template.Must(template.ParseFS(templateFS, templatePaths[KindTranslation]))
 )
 
 // Language configures source/target languages and optional regional locale
@@ -371,6 +379,33 @@ func DefaultTranslationExample() TranslationExample {
 			},
 		},
 		Note: `The final dialogue unit demonstrates narration: the source "name" is empty, and no speaker field is returned.`,
+	}
+}
+
+// RawTemplate returns the raw Go text/template source for kind
+// ("entity_recognition" or "translation").
+func RawTemplate(kind string) (string, error) {
+	path, ok := templatePaths[kind]
+	if !ok {
+		return "", fmt.Errorf("prompt: unknown kind %q (expected %s or %s)", kind, KindEntityRecognition, KindTranslation)
+	}
+	b, err := templateFS.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("prompt: read template %q: %w", path, err)
+	}
+	return string(b), nil
+}
+
+// DefaultExampleJSON returns the 2-space indented JSON of the built-in default
+// example for kind ("entity_recognition" or "translation").
+func DefaultExampleJSON(kind string) (string, error) {
+	switch kind {
+	case KindEntityRecognition:
+		return marshalIndented(DefaultEntityRecognitionExample())
+	case KindTranslation:
+		return marshalIndented(DefaultTranslationExample())
+	default:
+		return "", fmt.Errorf("prompt: unknown kind %q (expected %s or %s)", kind, KindEntityRecognition, KindTranslation)
 	}
 }
 

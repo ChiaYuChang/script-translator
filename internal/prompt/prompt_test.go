@@ -147,3 +147,29 @@ func TestRenderRejectsInvalidExamples(t *testing.T) {
 		t.Fatal("expected mismatched example index to fail validation")
 	}
 }
+
+func TestRawTemplateAndDefaultExampleJSON(t *testing.T) {
+	tmplER, err := RawTemplate(KindEntityRecognition)
+	if err != nil || !strings.Contains(tmplER, "{{.Language.From}}") {
+		t.Fatalf("unexpected RawTemplate(%q): (%v) %s", KindEntityRecognition, err, tmplER)
+	}
+	tmplTR, err := RawTemplate(KindTranslation)
+	if err != nil || !strings.Contains(tmplTR, "{{.Language.TargetStyle}}") {
+		t.Fatalf("unexpected RawTemplate(%q): (%v) %s", KindTranslation, err, tmplTR)
+	}
+	if _, err := RawTemplate("unknown"); err == nil {
+		t.Fatal("expected unknown kind to fail RawTemplate")
+	}
+
+	jsonER, err := DefaultExampleJSON(KindEntityRecognition)
+	if err != nil || !strings.Contains(jsonER, `"known_entities"`) || !strings.Contains(jsonER, "新堂ミナト") {
+		t.Fatalf("unexpected DefaultExampleJSON(%q): (%v) %s", KindEntityRecognition, err, jsonER)
+	}
+	jsonTR, err := DefaultExampleJSON(KindTranslation)
+	if err != nil || !strings.Contains(jsonTR, `"entries"`) || !strings.Contains(jsonTR, `"name": "新堂ミナト"`) {
+		t.Fatalf("unexpected DefaultExampleJSON(%q): (%v) %s", KindTranslation, err, jsonTR)
+	}
+	if _, err := DefaultExampleJSON("unknown"); err == nil {
+		t.Fatal("expected unknown kind to fail DefaultExampleJSON")
+	}
+}

@@ -1376,6 +1376,29 @@ func TestScriptRunCustomLanguageAndExamples(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	erExamplePath := filepath.Join(dir, "er_example.json")
+	if err := os.WriteFile(erExamplePath, mustMarshalJSONForTest(t, map[string]any{
+		"input": map[string]any{
+			"transcript": []map[string]any{{"speaker": "지수", "text": "서울에 가자."}},
+		},
+		"output": map[string]any{
+			"entity": []map[string]any{{"canonical": map[string]any{"from": "서울", "to": "Seoul"}}},
+		},
+	}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	trExamplePath := filepath.Join(dir, "tr_example.json")
+	if err := os.WriteFile(trExamplePath, mustMarshalJSONForTest(t, map[string]any{
+		"input": map[string]any{
+			"dialogue": []map[string]any{{"index": 0, "name": "지수", "text": "안녕."}},
+		},
+		"output": map[string]any{
+			"dialogue": []map[string]any{{"index": 0, "text": "Hi."}},
+		},
+	}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
 	cfgRaw := mustMarshalJSONForTest(t, map[string]any{
 		"cache_dir": filepath.Join(dir, "cache"),
 		"language": map[string]any{
@@ -1387,29 +1410,15 @@ func TestScriptRunCustomLanguageAndExamples(t *testing.T) {
 			"api_key":  "test-key",
 		},
 		"entity_recognition": map[string]any{
-			"model":       "gpt-entity",
-			"max_attempt": 1,
-			"example": map[string]any{
-				"input": map[string]any{
-					"transcript": []map[string]any{{"speaker": "지수", "text": "서울에 가자."}},
-				},
-				"output": map[string]any{
-					"entity": []map[string]any{{"canonical": map[string]any{"from": "서울", "to": "Seoul"}}},
-				},
-			},
+			"model":        "gpt-entity",
+			"max_attempt":  1,
+			"example_file": erExamplePath,
 		},
 		"translation": map[string]any{
-			"model":       "gpt-translate",
-			"batch_size":  10,
-			"max_attempt": 1,
-			"example": map[string]any{
-				"input": map[string]any{
-					"dialogue": []map[string]any{{"index": 0, "name": "지수", "text": "안녕."}},
-				},
-				"output": map[string]any{
-					"dialogue": []map[string]any{{"index": 0, "text": "Hi."}},
-				},
-			},
+			"model":        "gpt-translate",
+			"batch_size":   10,
+			"max_attempt":  1,
+			"example_file": trExamplePath,
 		},
 	})
 	if err := os.WriteFile(cfgPath, cfgRaw, 0o600); err != nil {
@@ -1506,5 +1515,74 @@ func TestScriptRecognizeUsesAPIKeyFile(t *testing.T) {
 	}
 	if gotAuth != "Bearer secret-from-file" {
 		t.Fatalf("Authorization = %q, want %q", gotAuth, "Bearer secret-from-file")
+	}
+}
+
+func TestPromptCommands(t *testing.T) {
+	runCLI := func(args ...string) string {
+		t.Helper()
+		var stdout bytes.Buffer
+		cmd := newRootCmd(cliDeps{
+			stdin:      &bytes.Buffer{},
+			stdout:     &stdout,
+			stderr:     &bytes.Buffer{},
+			stdinIsTTY: func() bool { return false },
+		})
+		cmd.SetArgs(args)
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("command %v failed: %v", args, err)
+		}
+		return stdout.String()
+	}
+
+	if out := runCLI("prompt", "template", "entity_recognition"); !strings.Contains(out, "{{.Language.From}}") {
+		t.Fatalf("unexpected template output:\n%s", out)
+	}
+	if out := runCLI("prompt", "template", "translation"); !strings.Contains(out, "{{.Language.TargetStyle}}") {
+		t.Fatalf("unexpected template output:\n%s", out)
+	}
+
+	if out := runCLI("prompt", "example", "entity_recognition"); !strings.Contains(out, `"known_entities"`) {
+		t.Fatalf("unexpected example output:\n%s", out)
+	}
+	if out := runCLI("prompt", "example", "translation"); !strings.Contains(out, `"dialogue"`) {
+		t.Fatalf("unexpected example output:\n%s", out)
+	}
+
+	if out := runCLI("prompt", "entity_recognition", "--default"); !strings.Contains(out, "Taiwan (zh-TW)") {
+		t.Fatalf("unexpected default entity_recognition prompt:\n%s", out)
+	}
+	if out := runCLI("prompt", "translation", "--default"); !strings.Contains(out, "Taiwan (zh-TW)") {
+		t.Fatalf("unexpected default translation prompt:\n%s", out)
+	}
+
+	dir := t.TempDir()
+	erExamplePath := filepath.Join(dir, "er.json")
+	if err := os.WriteFile(erExamplePath, mustMarshalJSONForTest(t, map[string]any{
+		"input": map[string]any{
+			"transcript": []map[string]any{{"speaker": "지수", "text": "서울에 가자."}},
+		},
+		"output": map[string]any{
+			"entity": []map[string]any{{"canonical": map[string]any{"from": "서울", "to": "Seoul"}}},
+		},
+	}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(cfgPath, mustMarshalJSONForTest(t, map[string]any{
+		"language":           map[string]any{"from": "Korean", "to": "English"},
+		"entity_recognition": map[string]any{"model": "gpt-entity", "example_file": erExamplePath},
+		"translation":        map[string]any{"model": "gpt-translate"},
+	}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	erOut := runCLI("prompt", "entity_recognition", "-c", cfgPath)
+	if !strings.Contains(erOut, "expert Korean visual novel") || !strings.Contains(erOut, "지수:서울에 가자.") || strings.Contains(erOut, "Taiwan") {
+		t.Fatalf("unexpected rendered entity_recognition output:\n%s", erOut)
+	}
+	trOut := runCLI("prompt", "translation", "-c", cfgPath)
+	if !strings.Contains(trOut, "working into English.") || strings.Contains(trOut, "Taiwan") {
+		t.Fatalf("unexpected rendered translation output:\n%s", trOut)
 	}
 }

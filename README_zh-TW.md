@@ -92,7 +92,7 @@ chmod +x script-translator-linux-amd64
 task build
 
 # 或手動編譯並注入版本（未指定時預設為 dev）
-go build -ldflags "-X main.version=v0.3.0" -o ./bin/script-translator ./cmd/script-translator
+go build -ldflags "-X main.version=v0.4.0" -o ./bin/script-translator ./cmd/script-translator
 
 # 或直接以 go run 執行
 go run ./cmd/script-translator --help
@@ -160,14 +160,14 @@ CLI 透過 [`config.Load`](internal/config/config.go) 讀取 JSON 設定檔，�
 | `provider` | `api_key_file` | 否 | — | 存放 API key 的檔案路徑（支援 `~` 展開，優先權高於 `api_key_env`；適合 NixOS / Home Manager secrets） |
 | `provider` | `api_key_env` | 否 | `"OPENAI_API_KEY"` | 讀取 API key 的環境變數名稱 |
 | `provider` | `wait_time` | 否 | `0` | 每次 LLM 呼叫／翻譯 batch 之間及一般錯誤重試前的等待秒數（`0` 表示不等待） |
-| `provider` | `retry_time` | 否 | `0` | 遇到 HTTP `429`、`5xx`、傳輸層 `unexpected EOF`／`EOF` 或 `net.Error`逾時時的指數退避基準秒數（依序等待 `retry_time * 2^0`, `2^1`, ...；翻譯於 `unexpected EOF` 時還會將 `batch_size` 動態縮小為 `* 9 / 10`，最小為 `1`，並重算 `total_batch`） |
+| `provider` | `retry_time` | 否 | `0` | 遇到 HTTP `429`、`5xx`、傳輸層 `unexpected EOF`／`EOF` 或 `net.Error`逾時時的指數退避基準秒數（依序等待 `retry_time * 2^0`, `2^1`, ...；翻譯於 `unexpected EOF` 且 `batch > 10` 時還會將 `batch_size` 動態縮小為 `max(batch * 9 / 10, 10)`，並重算 `total_batch`） |
 | `entity_recognition` | `model` | 是 | — | 實體辨識使用的模型名稱 |
 | `entity_recognition` | `max_attempt` | 否 | `3` | 實體辨識失敗時的最大嘗試次數（`>= 1`） |
-| `entity_recognition` | `example` | 否 | 內建日譯繁中範例 | 選填的自訂 few-shot 範例（`input.known_entities`、`input.transcript`、`output.entity`、`explanation`），會格式化填入實體辨識 prompt |
+| `entity_recognition` | `example_file` | 否 | 內建日譯繁中範例 | 選填的自訂 few-shot 範例 JSON 檔路徑（含 `input`、`output`、選填 `explanation`，支援 `~` 展開） |
 | `translation` | `model` | 是 | — | 對話翻譯使用的模型名稱 |
 | `translation` | `batch_size` | 否 | `20` | 每次翻譯請求包含的對話單元數（`>= 1`） |
 | `translation` | `max_attempt` | 否 | `3` | 每個翻譯 batch 失敗時的最大嘗試次數（`>= 1`） |
-| `translation` | `example` | 否 | 內建日譯繁中範例 | 選填的自訂 few-shot 範例（`input.entries`、`input.history`、`input.dialogue`、`output.dialogue`、`note`），會格式化填入翻譯 prompt |
+| `translation` | `example_file` | 否 | 內建日譯繁中範例 | 選填的自訂 few-shot 範例 JSON 檔路徑（含 `input`、`output`、選填 `note`，支援 `~` 展開） |
 | `observation.log` | `level` | 否 | `"info"` | `debug` / `info` / `warn` / `error` |
 | `observation.log.console` | `enable` | 否 | `true` | 是否輸出人讀 log 到 `stderr`（不會混入 `stdout` pipe） |
 | `observation.log.file` | `enable`, `file` | 否 | `false` | 是否附加 JSONL 結構化 log（含 `time` 與 UUIDv7 `run_id`） |
@@ -193,6 +193,11 @@ script-translator
 │   ├── all         # 列出全部預設路徑與參數
 │   ├── which       # 查詢單一預設變數值
 │   └── init        # 在預設設定位置產生最簡 config.json
+├── prompt
+│   ├── template    # 輸出原始 .gotmpl 模板（entity_recognition | translation）
+│   ├── example     # 匯出內建預設範例 JSON，方便存檔修改
+│   ├── entity_recognition # 輸出套用設定後（或 --default）的完整實體辨識 system prompt
+│   └── translation # 輸出套用設定後（或 --default）的完整翻譯 system prompt
 └── version         # 顯示目前版本（亦可用 --version）
 ```
 
@@ -305,6 +310,12 @@ script-translator script recognize -i e2e/data/e2e_scene_ver1.txt -d entity_dict
 - `default all`：列出目前所有預設路徑與參數（`CONFIG`、`INPUT`、`OUTPUT`、`CACHE_DIR`、`APIKEY_ENV`、`BATCH_SIZE`、`MAX_ATTEMPT`、`WAIT_TIME`、`RETRY_TIME`、`LOG_LEVEL`）；可加 `--json` 以 JSON 格式輸出
 - `default which <key>`：輸出單一指定預設值（不分大小寫，如 `CONFIG`、`APIKEY_ENV`、`CACHE_DIR`），適合搭配 shell script 使用
 - `default init`：於預設設定位置（`~/.config/script-translator/config.json`）建立可通過 schema 驗證的最簡 `config.json`（若已存在須加 `-f / --force` 才覆寫）
+
+#### `script-translator prompt`（`template` / `example` / `entity_recognition` / `translation`）
+
+- `prompt template <entity_recognition|translation>`：輸出內嵌的 `.gotmpl` 原始模板
+- `prompt example <entity_recognition|translation>`：輸出內建預設範例 JSON（可直接重導向存檔修改，再把路徑填到 `example_file`）
+- `prompt entity_recognition [-c config.json] [--default]` / `prompt translation [-c config.json] [--default]`：輸出最終送給 LLM 的完整 system prompt
 
 #### `script-translator version`
 

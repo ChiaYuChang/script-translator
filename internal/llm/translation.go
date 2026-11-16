@@ -53,7 +53,8 @@ type TranslateParams struct {
 	Model           string                             `json:"model" jsonschema:"Model name for script translation"`
 	BatchSize       int                                `json:"batch_size" jsonschema:"Number of dialogue units per translation batch"`
 	MaxAttempt      int                                `json:"max_attempt" jsonschema:"Maximum attempts per translation batch"`
-	Example         *prompt.TranslationExample         `json:"example,omitzero" jsonschema:"Optional custom few-shot example for translation"`
+	ExampleFile     string                             `json:"example_file,omitzero" jsonschema:"Optional path to custom translation example JSON file (supports ~ expansion)"`
+	Example         *prompt.TranslationExample         `json:"-"`
 	Language        prompt.Language                    `json:"-"`
 	ResumeFrom      []model.TranslatedText             `json:"-"`
 	OnBatchComplete func([]model.TranslatedText) error `json:"-"`

@@ -49,8 +49,8 @@ in {
         Configuration written declaratively to `script-translator/config.json`
         when non-empty. Supports top-level `language` (`from`, `to`, optional
         `location`), `provider`, `entity_recognition` (including optional
-        few-shot `example`), `translation` (including optional few-shot
-        `example`), and `observation`. Prefer `provider.api_key_file` (e.g., for
+        `example_file`), `translation` (including optional `example_file`), and
+        `observation`. Prefer `provider.api_key_file` (e.g., for
         sops-nix/agenix) or `provider.api_key_env` over inline `provider.api_key`
         since Nix store files are world-readable.
       '';

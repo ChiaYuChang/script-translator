@@ -347,7 +347,10 @@ func TestConfigExpandsTildePaths(t *testing.T) {
 	}
 }
 
-func TestParseLanguageAndPromptExamples(t *testing.T) {
+func TestParseLanguageAndPromptExampleFiles(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
 	// Omitting "language" applies full Japanese -> Traditional Chinese (Taiwan) defaults.
 	defaultCfg, err := Parse([]byte(`{
 		"entity_recognition": {"model": "gpt-entity"},
@@ -362,67 +365,99 @@ func TestParseLanguageAndPromptExamples(t *testing.T) {
 		t.Fatalf("unexpected default language: %#v", defaultCfg.Language)
 	}
 
+	erFile := filepath.Join(fakeHome, "er_example.json")
+	if err := os.WriteFile(erFile, []byte(`{
+		"input": {
+			"transcript": [{"speaker": "지수", "text": "서울에 가자."}]
+		},
+		"output": {
+			"entity": [{"canonical": {"from": "서울", "to": "Seoul"}}]
+		}
+	}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	trFile := filepath.Join(fakeHome, "tr_example.json")
+	if err := os.WriteFile(trFile, []byte(`{
+		"input": {
+			"entries": [{"canonical": {"from": "지수", "to": "Jisoo"}}],
+			"dialogue": [{"index": 0, "text": "안녕."}]
+		},
+		"output": {
+			"dialogue": [{"index": 0, "text": "Hey."}]
+		}
+	}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
 	// Custom "language" without "location" leaves Location empty (does not inject Taiwan).
 	customCfg, err := Parse([]byte(`{
 		"language": {"from": " Korean ", "to": " English "},
 		"entity_recognition": {
 			"model": "gpt-entity",
-			"example": {
-				"input": {
-					"transcript": [{"speaker": "지수", "text": "서울에 가자."}]
-				},
-				"output": {
-					"entity": [{"canonical": {"from": "서울", "to": "Seoul"}}]
-				}
-			}
+			"example_file": "~/er_example.json"
 		},
 		"translation": {
 			"model": "gpt-translate",
-			"example": {
-				"input": {
-					"entries": [{"canonical": {"from": "지수", "to": "Jisoo"}}],
-					"dialogue": [{"index": 0, "text": "안녕."}]
-				},
-				"output": {
-					"dialogue": [{"index": 0, "text": "Hey."}]
-				}
-			}
+			"example_file": "~/tr_example.json"
 		}
 	}`))
 	if err != nil {
-		t.Fatalf("Parse custom language/examples failed: %v", err)
+		t.Fatalf("Parse custom language/example_file failed: %v", err)
 	}
 	if customCfg.Language.From != "Korean" || customCfg.Language.To != "English" || customCfg.Language.Location != "" {
 		t.Fatalf("unexpected custom language: %#v", customCfg.Language)
 	}
-	if customCfg.EntityRecognition.Example == nil || customCfg.Translation.Example == nil {
-		t.Fatal("expected parsed custom prompt examples")
+	if customCfg.EntityRecognition.ExampleFile != erFile || customCfg.EntityRecognition.Example == nil {
+		t.Fatalf("expected expanded and loaded ER example, got %#v", customCfg.EntityRecognition)
+	}
+	if customCfg.Translation.ExampleFile != trFile || customCfg.Translation.Example == nil {
+		t.Fatalf("expected expanded and loaded translation example, got %#v", customCfg.Translation)
 	}
 
-	// Invalid example must fail Parse.
+	// Inline "example" is rejected as unknown member.
 	if _, err := Parse([]byte(`{
-		"entity_recognition": {
-			"model": "gpt-entity",
-			"example": {
-				"input": {"transcript": []},
-				"output": {"entity": []}
-			}
-		},
+		"entity_recognition": {"model": "gpt-entity", "example": {}},
 		"translation": {"model": "gpt-translate"}
-	}`)); err == nil || !strings.Contains(err.Error(), "entity_recognition.example") {
-		t.Fatalf("expected invalid entity_recognition.example error, got: %v", err)
+	}`)); err == nil {
+		t.Fatal("expected inline entity_recognition.example to be rejected")
 	}
 
+	// Missing example_file must fail Parse.
+	if _, err := Parse([]byte(`{
+		"entity_recognition": {"model": "gpt-entity", "example_file": "~/missing_er.json"},
+		"translation": {"model": "gpt-translate"}
+	}`)); err == nil {
+		t.Fatal("expected missing entity_recognition.example_file error")
+	}
+
+	// Unknown field in external example file must fail Parse.
+	badFieldFile := filepath.Join(fakeHome, "bad_field_er.json")
+	if err := os.WriteFile(badFieldFile, []byte(`{
+		"input": {"transcript": [{"speaker": "A", "text": "x"}]},
+		"output": {"entity": []},
+		"extra": true
+	}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Parse([]byte(`{
+		"entity_recognition": {"model": "gpt-entity", "example_file": "~/bad_field_er.json"},
+		"translation": {"model": "gpt-translate"}
+	}`)); err == nil {
+		t.Fatal("expected unknown field in example_file to fail Parse")
+	}
+
+	// Semantic validation must reject mismatched indices in translation example_file.
+	badIndexFile := filepath.Join(fakeHome, "bad_index_tr.json")
+	if err := os.WriteFile(badIndexFile, []byte(`{
+		"input": {"dialogue": [{"index": 0, "text": "a"}]},
+		"output": {"dialogue": [{"index": 1, "text": "b"}]}
+	}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := Parse([]byte(`{
 		"entity_recognition": {"model": "gpt-entity"},
-		"translation": {
-			"model": "gpt-translate",
-			"example": {
-				"input": {"dialogue": [{"index": 0, "text": "a"}]},
-				"output": {"dialogue": [{"index": 1, "text": "b"}]}
-			}
-		}
+		"translation": {"model": "gpt-translate", "example_file": "~/bad_index_tr.json"}
 	}`)); err == nil || !strings.Contains(err.Error(), "translation.example") {
-		t.Fatalf("expected invalid translation.example error, got: %v", err)
+		t.Fatalf("expected invalid translation example error, got: %v", err)
 	}
 }

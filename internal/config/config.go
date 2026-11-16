@@ -310,7 +310,9 @@ func (c *Config) normalize() {
 	c.Provider.APIKeyFile = strings.TrimSpace(c.Provider.APIKeyFile)
 	c.Provider.APIKeyEnv = strings.TrimSpace(c.Provider.APIKeyEnv)
 	c.EntityRecognition.Model = strings.TrimSpace(c.EntityRecognition.Model)
+	c.EntityRecognition.ExampleFile = strings.TrimSpace(c.EntityRecognition.ExampleFile)
 	c.Translation.Model = strings.TrimSpace(c.Translation.Model)
+	c.Translation.ExampleFile = strings.TrimSpace(c.Translation.ExampleFile)
 	c.Observation.Normalize()
 }
 
@@ -327,7 +329,38 @@ func (c *Config) resolvePaths() error {
 		}
 		c.Provider.APIKeyFile = keyFile
 	}
+	if err := resolveExampleFile("entity_recognition.example_file", &c.EntityRecognition.ExampleFile, &c.EntityRecognition.Example); err != nil {
+		return err
+	}
+	if err := resolveExampleFile("translation.example_file", &c.Translation.ExampleFile, &c.Translation.Example); err != nil {
+		return err
+	}
 	return c.Observation.ResolvePaths()
+}
+
+func resolveExampleFile[T any](field string, pathPtr *string, dst **T) error {
+	if *pathPtr == "" {
+		return nil
+	}
+	resolved, err := pathutil.ExpandHome(*pathPtr)
+	if err != nil {
+		return fmt.Errorf("config: %s: %w", field, err)
+	}
+	*pathPtr = resolved
+
+	data, err := os.ReadFile(resolved) // #nosec G304 -- example_file path is explicitly configured by CLI/user
+	if err != nil {
+		return fmt.Errorf("config: %s %q: %w", field, resolved, err)
+	}
+	if len(bytes.TrimSpace(data)) == 0 {
+		return fmt.Errorf("config: %s %q: empty JSON", field, resolved)
+	}
+	var parsed T
+	if err := json.Unmarshal(data, &parsed, json.RejectUnknownMembers(true)); err != nil {
+		return fmt.Errorf("config: parse %s %q: %w", field, resolved, err)
+	}
+	*dst = &parsed
+	return nil
 }
 
 // Validate checks semantic constraints not expressible in structural JSON Schema

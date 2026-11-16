@@ -93,7 +93,7 @@ chmod +x script-translator-linux-amd64
 task build
 
 # Or build manually with a version string (defaults to dev if omitted)
-go build -ldflags "-X main.version=v0.3.0" -o ./bin/script-translator ./cmd/script-translator
+go build -ldflags "-X main.version=v0.4.0" -o ./bin/script-translator ./cmd/script-translator
 
 # Or run directly via go run
 go run ./cmd/script-translator --help
@@ -161,14 +161,14 @@ Configuration is loaded and validated against a strict JSON Schema via [`config.
 | `provider` | `api_key_file` | No | — | Path to file containing the API key (supports `~` expansion; overrides `api_key_env`; ideal for NixOS / Home Manager secrets) |
 | `provider` | `api_key_env` | No | `"OPENAI_API_KEY"` | Environment variable name holding the API key |
 | `provider` | `wait_time` | No | `0` | Delay in seconds between LLM calls / translation batches and before retrying general errors (`0` disables waiting) |
-| `provider` | `retry_time` | No | `0` | Base delay in seconds for exponential backoff (`retry_time * 2^0`, `2^1`, ...) on HTTP `429`, `5xx`, transport `unexpected EOF` / `EOF`, and `net.Error` timeouts; on `unexpected EOF`, translation also dynamically shrinks `batch_size` (`max(batch * 9 / 10, 1)`) and recalculates `total_batch` |
+| `provider` | `retry_time` | No | `0` | Base delay in seconds for exponential backoff (`retry_time * 2^0`, `2^1`, ...) on HTTP `429`, `5xx`, transport `unexpected EOF` / `EOF`, and `net.Error` timeouts; on `unexpected EOF`, translation also dynamically shrinks `batch_size` (`max(batch * 9 / 10, 10)` when `batch > 10`) and recalculates `total_batch` |
 | `entity_recognition` | `model` | Yes | — | Model name used for entity recognition |
 | `entity_recognition` | `max_attempt` | No | `3` | Maximum attempts on entity recognition failure (`>= 1`) |
-| `entity_recognition` | `example` | No | Built-in Japanese→zh-TW example | Optional custom few-shot example (`input.known_entities`, `input.transcript`, `output.entity`, `explanation`) rendered into the entity recognition prompt |
+| `entity_recognition` | `example_file` | No | Built-in Japanese→zh-TW example | Optional path to a custom few-shot example JSON file (`input`, `output`, optional `explanation`; supports `~` expansion) |
 | `translation` | `model` | Yes | — | Model name used for dialogue translation |
 | `translation` | `batch_size` | No | `20` | Number of dialogue units per translation batch (`>= 1`) |
 | `translation` | `max_attempt` | No | `3` | Maximum attempts per translation batch (`>= 1`) |
-| `translation` | `example` | No | Built-in Japanese→zh-TW example | Optional custom few-shot example (`input.entries`, `input.history`, `input.dialogue`, `output.dialogue`, `note`) rendered into the translation prompt |
+| `translation` | `example_file` | No | Built-in Japanese→zh-TW example | Optional path to a custom few-shot example JSON file (`input`, `output`, optional `note`; supports `~` expansion) |
 | `observation.log` | `level` | No | `"info"` | `debug` / `info` / `warn` / `error` |
 | `observation.log.console` | `enable` | No | `true` | Write human-readable logs to `stderr` (never pollutes `stdout` pipes) |
 | `observation.log.file` | `enable`, `file` | No | `false` | Append structured JSONL logs (with `time` and UUIDv7 `run_id`) |
@@ -194,6 +194,11 @@ script-translator
 │   ├── all         # List all default paths and parameters
 │   ├── which       # Print a single default setting value
 │   └── init        # Create a minimal valid config.json at the default config path
+├── prompt
+│   ├── template    # Print raw .gotmpl template (entity_recognition | translation)
+│   ├── example     # Print default few-shot example JSON for editing
+│   ├── entity_recognition # Render entity recognition system prompt from config (or --default)
+│   └── translation # Render translation system prompt from config (or --default)
 └── version         # Print current version (or use --version)
 ```
 
@@ -306,6 +311,12 @@ script-translator script recognize -i e2e/data/e2e_scene_ver1.txt -d entity_dict
 - `default all`: List all default paths and parameters (`CONFIG`, `INPUT`, `OUTPUT`, `CACHE_DIR`, `APIKEY_ENV`, `BATCH_SIZE`, `MAX_ATTEMPT`, `WAIT_TIME`, `RETRY_TIME`, `LOG_LEVEL`); pass `--json` for JSON output
 - `default which <key>`: Print a single default value (case-insensitive, e.g. `CONFIG`, `APIKEY_ENV`, `CACHE_DIR`) for shell scripts
 - `default init`: Create a minimal schema-valid `config.json` at `~/.config/script-translator/config.json` (pass `-f / --force` to overwrite an existing file)
+
+#### `script-translator prompt` (`template` / `example` / `entity_recognition` / `translation`)
+
+- `prompt template <entity_recognition|translation>`: Print the raw `.gotmpl` template source
+- `prompt example <entity_recognition|translation>`: Export the built-in default example JSON (redirect to a file, customize it, and point `example_file` at it)
+- `prompt entity_recognition [-c config.json] [--default]` / `prompt translation [-c config.json] [--default]`: Render the final system prompt sent to the LLM
 
 #### `script-translator version`
 
