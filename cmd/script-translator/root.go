@@ -158,6 +158,7 @@ func initProvider(cfg config.Config, saveRawDir, rawPrefix string, obs *observat
 	client := openai.NewClient(opts...)
 	provider := llm.NewProvider(
 		&client,
+		llm.WithEndpoint(cfg.Provider.Endpoint),
 		llm.WithLogger(obs.Logger),
 		llm.WithMetrics(obs.Metrics),
 		llm.WithWaitTime(time.Duration(cfg.Provider.WaitTime)*time.Second),

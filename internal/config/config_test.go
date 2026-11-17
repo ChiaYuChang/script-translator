@@ -461,3 +461,36 @@ func TestParseLanguageAndPromptExampleFiles(t *testing.T) {
 		t.Fatalf("expected invalid translation example error, got: %v", err)
 	}
 }
+
+func TestProviderEndpointParsing(t *testing.T) {
+	defCfg, err := Parse([]byte(`{
+		"entity_recognition": {"model": "gpt-entity"},
+		"translation": {"model": "gpt-translate"}
+	}`))
+	if err != nil {
+		t.Fatalf("Parse default failed: %v", err)
+	}
+	if defCfg.Provider.Endpoint != DefaultEndpoint {
+		t.Fatalf("default Endpoint = %q, want %q", defCfg.Provider.Endpoint, DefaultEndpoint)
+	}
+
+	chatCfg, err := Parse([]byte(`{
+		"provider": {"endpoint": "chat_completions"},
+		"entity_recognition": {"model": "gpt-entity"},
+		"translation": {"model": "gpt-translate"}
+	}`))
+	if err != nil {
+		t.Fatalf("Parse chat_completions failed: %v", err)
+	}
+	if chatCfg.Provider.Endpoint != "chat_completions" {
+		t.Fatalf("Endpoint = %q, want chat_completions", chatCfg.Provider.Endpoint)
+	}
+
+	if _, err := Parse([]byte(`{
+		"provider": {"endpoint": "invalid"},
+		"entity_recognition": {"model": "gpt-entity"},
+		"translation": {"model": "gpt-translate"}
+	}`)); err == nil {
+		t.Fatal("expected invalid provider.endpoint to fail Parse")
+	}
+}

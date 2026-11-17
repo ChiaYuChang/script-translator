@@ -426,3 +426,73 @@ func TestRecognizeEntitiesCustomLanguageAndExample(t *testing.T) {
 		t.Fatalf("expected no HTTP calls on invalid example, got %d new calls", calls.Load()-beforeCalls)
 	}
 }
+
+func TestRecognizeEntitiesChatCompletionsEndpoint(t *testing.T) {
+	var seenPath string
+	var seenRole0, seenRole1, seenFormatType string
+	var seenStrict bool
+
+	p := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		seenPath = r.URL.Path
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var req struct {
+			Messages []struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"messages"`
+			ResponseFormat struct {
+				Type       string `json:"type"`
+				JSONSchema struct {
+					Name   string `json:"name"`
+					Strict bool   `json:"strict"`
+				} `json:"json_schema"`
+			} `json:"response_format"`
+		}
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Fatal(err)
+		}
+		if len(req.Messages) == 2 {
+			seenRole0 = req.Messages[0].Role
+			seenRole1 = req.Messages[1].Role
+		}
+		seenFormatType = req.ResponseFormat.Type
+		seenStrict = req.ResponseFormat.JSONSchema.Strict
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id": "chatcmpl_er",
+			"object": "chat.completion",
+			"created": 1,
+			"model": "entity-model-v1",
+			"choices": [{
+				"index": 0,
+				"finish_reason": "stop",
+				"message": {
+					"role": "assistant",
+					"content": "{\"entity\":[{\"canonical\":{\"from\":\"秋葉原\",\"to\":\"秋葉原\"},\"aliases\":[]}]}"
+				}
+			}],
+			"usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+		}`))
+	}, WithEndpoint(EndpointChatCompletions))
+
+	got, err := p.RecognizeEntities(context.Background(), "朝倉ユイ:秋葉原へ行こう。", RecognizeEntitiesParams{
+		Model:      "entity-model-v1",
+		MaxAttempt: 1,
+	})
+	if err != nil {
+		t.Fatalf("RecognizeEntities chat_completions failed: %v", err)
+	}
+	if seenPath != "/v1/chat/completions" {
+		t.Fatalf("HTTP path = %q, want /v1/chat/completions", seenPath)
+	}
+	if seenRole0 != "system" || seenRole1 != "user" || seenFormatType != "json_schema" || !seenStrict {
+		t.Fatalf("unexpected chat completions payload: roles=(%q,%q) format=%q strict=%v", seenRole0, seenRole1, seenFormatType, seenStrict)
+	}
+	if len(got) != 1 || got[0].Canonical.From != "秋葉原" {
+		t.Fatalf("unexpected recognized entities: %#v", got)
+	}
+}

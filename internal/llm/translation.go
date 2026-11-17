@@ -12,8 +12,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/google/jsonschema-go/jsonschema"
-	"github.com/openai/openai-go/v3"
-	"github.com/openai/openai-go/v3/responses"
 
 	"go-script-translate/internal/model"
 	"go-script-translate/internal/observation"
@@ -188,7 +186,7 @@ func (p *Provider) Translate(
 			var nextTotalBatches int
 			if attempt+1 < param.MaxAttempt {
 				delay, backoffApplied = p.retryDelay(lastErr, attempt)
-				if isUnexpectedEOFError(lastErr) && batchLen > minUnexpectedEOFShrinkBatchSize {
+				if isBatchShrinkError(lastErr) && batchLen > minUnexpectedEOFShrinkBatchSize {
 					nextBatchSize = max(batchLen*9/10, minUnexpectedEOFShrinkBatchSize)
 					nextTotalBatches = (batchNum - 1) + TotalBatches(len(req.Dialogue)-start, nextBatchSize)
 				}
@@ -313,33 +311,24 @@ func (p *Provider) doTranslateBatchOnce(
 		p.recordAttempt(ctx, observation.MetricTypeTranslationBatchUsage, modelName, batchNum, totalBatch, batchSize, attempt, started, usage, err)
 	}()
 
-	resp, err := p.client.Responses.New(ctx, responses.ResponseNewParams{
-		Model:        modelName,
-		Instructions: openai.String(instructions),
-		Input: responses.ResponseNewParamsInputUnion{
-			OfString: openai.String(userPrompt),
-		},
-		Text: responses.ResponseTextConfigParam{
-			Format: responses.ResponseFormatTextConfigUnionParam{
-				OfJSONSchema: &responses.ResponseFormatTextJSONSchemaConfigParam{
-					Name:   "script_translation",
-					Schema: schemaMap,
-					Strict: openai.Bool(true),
-				},
-			},
-		},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("request: %w", err)
-	}
-	usage = extractUsage(resp)
-
-	outputText, err := finalJSONText(resp)
+	outputText, callUsage, err := p.requestStructuredJSON(
+		ctx,
+		modelName,
+		instructions,
+		userPrompt,
+		"script_translation",
+		schemaMap,
+	)
+	usage = callUsage
 	if err != nil {
 		return nil, err
 	}
 
 	return parseAndValidateTranslationBatch(resolved, outputText, batch)
+}
+
+func isBatchShrinkError(err error) bool {
+	return isUnexpectedEOFError(err) || errors.Is(err, errResponseTruncated)
 }
 
 func parseAndValidateTranslationBatch(

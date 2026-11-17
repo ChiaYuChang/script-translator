@@ -93,7 +93,7 @@ chmod +x script-translator-linux-amd64
 task build
 
 # Or build manually with a version string (defaults to dev if omitted)
-go build -ldflags "-X main.version=v0.4.1" -o ./bin/script-translator ./cmd/script-translator
+go build -ldflags "-X main.version=v0.4.2" -o ./bin/script-translator ./cmd/script-translator
 
 # Or run directly via go run
 go run ./cmd/script-translator --help
@@ -156,12 +156,13 @@ Configuration is loaded and validated against a strict JSON Schema via [`config.
 | `language` | `from` | No | `"Japanese"` | Source script language injected into prompt templates |
 | `language` | `to` | No | `"Traditional Chinese"` | Target localization language injected into prompt templates |
 | `language` | `location` | No | `"Taiwan (zh-TW)"` (when `language` omitted) | Optional target region/locale (omitted by default when `language` is explicitly configured) |
+| `provider` | `endpoint` | No | `"responses"` | OpenAI-compatible endpoint protocol (`"responses"` for `/v1/responses`, `"chat_completions"` for `/v1/chat/completions`) |
 | `provider` | `base_url` | No | — | Custom OpenAI-compatible API endpoint (`http` / `https` URL) |
 | `provider` | `api_key` | No | — | Explicit inline API key (overrides `api_key_file` and `api_key_env`) |
 | `provider` | `api_key_file` | No | — | Path to file containing the API key (supports `~` expansion; overrides `api_key_env`; ideal for NixOS / Home Manager secrets) |
 | `provider` | `api_key_env` | No | `"OPENAI_API_KEY"` | Environment variable name holding the API key |
 | `provider` | `wait_time` | No | `0` | Delay in seconds between LLM calls / translation batches and before retrying general errors (`0` disables waiting) |
-| `provider` | `retry_time` | No | `0` | Base delay in seconds for exponential backoff (`retry_time * 2^0`, `2^1`, ...) on HTTP `429`, `5xx`, transport `unexpected EOF` / `EOF`, and `net.Error` timeouts; on `unexpected EOF`, translation also dynamically shrinks `batch_size` (`max(batch * 9 / 10, 10)` when `batch > 10`) and recalculates `total_batch` |
+| `provider` | `retry_time` | No | `0` | Base delay in seconds for exponential backoff (`retry_time * 2^0`, `2^1`, ...) on HTTP `429`, `5xx`, transport `unexpected EOF` / `EOF`, and `net.Error` timeouts; on `unexpected EOF` or truncated output (`incomplete` / `length`), translation also dynamically shrinks `batch_size` (`max(batch * 9 / 10, 10)` when `batch > 10`) and recalculates `total_batch` |
 | `entity_recognition` | `model` | Yes | — | Model name used for entity recognition |
 | `entity_recognition` | `max_attempt` | No | `3` | Maximum attempts on entity recognition failure (`>= 1`) |
 | `entity_recognition` | `example_file` | No | Built-in Japanese→zh-TW example | Optional path to a custom few-shot example JSON file (`input`, `output`, optional `explanation`; supports `~` expansion) |

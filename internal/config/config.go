@@ -21,6 +21,7 @@ import (
 
 const (
 	DefaultCacheDir   = "./cache"
+	DefaultEndpoint   = llm.EndpointResponses
 	DefaultAPIKeyEnv  = "OPENAI_API_KEY"
 	DefaultBatchSize  = 20
 	DefaultMaxAttempt = 3
@@ -29,8 +30,9 @@ const (
 )
 
 // ProviderConfig defines connection and credential settings for an
-// OpenAI-compatible Responses API endpoint.
+// OpenAI-compatible API endpoint.
 type ProviderConfig struct {
+	Endpoint   string `json:"endpoint,omitzero" jsonschema:"API endpoint protocol: responses (default) or chat_completions"`
 	BaseURL    string `json:"base_url,omitzero" jsonschema:"Optional OpenAI-compatible API base URL"`
 	APIKey     string `json:"api_key,omitzero" jsonschema:"Optional inline API key overriding api_key_file and api_key_env"`
 	APIKeyFile string `json:"api_key_file,omitzero" jsonschema:"Optional file path holding the API key (supports ~ home expansion, overrides api_key_env)"`
@@ -80,6 +82,7 @@ func (p ProviderConfig) LogValue() slog.Value {
 		apiKey = "[REDACTED]"
 	}
 	return slog.GroupValue(
+		slog.String("endpoint", p.Endpoint),
 		slog.String("base_url", p.BaseURL),
 		slog.String("api_key", apiKey),
 		slog.String("api_key_file", p.APIKeyFile),
@@ -104,6 +107,7 @@ func Default() Config {
 		CacheDir: DefaultCacheDir,
 		Language: prompt.DefaultLanguage(),
 		Provider: ProviderConfig{
+			Endpoint:  DefaultEndpoint,
 			APIKeyEnv: DefaultAPIKeyEnv,
 			WaitTime:  DefaultWaitTime,
 			RetryTime: DefaultRetryTime,
@@ -141,6 +145,14 @@ func Schema() (*jsonschema.Schema, error) {
 		cacheProp.Default = b
 	}
 	if prov := schema.Properties["provider"]; prov != nil {
+		if endpointProp := prov.Properties["endpoint"]; endpointProp != nil {
+			b, err := json.Marshal(DefaultEndpoint)
+			if err != nil {
+				return nil, fmt.Errorf("config: marshal default endpoint: %w", err)
+			}
+			endpointProp.Default = b
+			endpointProp.Enum = []any{llm.EndpointResponses, llm.EndpointChatCompletions}
+		}
 		if apiKeyEnv := prov.Properties["api_key_env"]; apiKeyEnv != nil {
 			b, err := json.Marshal(DefaultAPIKeyEnv)
 			if err != nil {
@@ -305,6 +317,10 @@ func Parse(data []byte) (Config, error) {
 func (c *Config) normalize() {
 	c.CacheDir = strings.TrimSpace(c.CacheDir)
 	c.Language.Normalize()
+	c.Provider.Endpoint = strings.ToLower(strings.TrimSpace(c.Provider.Endpoint))
+	if c.Provider.Endpoint == "" {
+		c.Provider.Endpoint = DefaultEndpoint
+	}
 	c.Provider.BaseURL = strings.TrimSpace(c.Provider.BaseURL)
 	c.Provider.APIKey = strings.TrimSpace(c.Provider.APIKey)
 	c.Provider.APIKeyFile = strings.TrimSpace(c.Provider.APIKeyFile)
@@ -368,6 +384,11 @@ func resolveExampleFile[T any](field string, pathPtr *string, dst **T) error {
 func (c Config) Validate() error {
 	if c.CacheDir == "" {
 		return errors.New("cache_dir must not be empty")
+	}
+	switch c.Provider.Endpoint {
+	case llm.EndpointResponses, llm.EndpointChatCompletions:
+	default:
+		return fmt.Errorf("invalid provider.endpoint %q (expected %q or %q)", c.Provider.Endpoint, llm.EndpointResponses, llm.EndpointChatCompletions)
 	}
 	if c.Provider.BaseURL != "" {
 		u, err := url.Parse(c.Provider.BaseURL)

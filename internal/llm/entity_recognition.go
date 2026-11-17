@@ -9,8 +9,6 @@ import (
 	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
-	"github.com/openai/openai-go/v3"
-	"github.com/openai/openai-go/v3/responses"
 
 	"go-script-translate/internal/model"
 	"go-script-translate/internal/observation"
@@ -153,28 +151,15 @@ func (p *Provider) doRecognizeEntitiesOnce(
 		p.recordAttempt(ctx, observation.MetricTypeEntityUsage, modelName, 0, 0, 0, attempt, started, usage, err)
 	}()
 
-	resp, err := p.client.Responses.New(ctx, responses.ResponseNewParams{
-		Model:        modelName,
-		Instructions: openai.String(instructions),
-		Input: responses.ResponseNewParamsInputUnion{
-			OfString: openai.String(requestBody),
-		},
-		Text: responses.ResponseTextConfigParam{
-			Format: responses.ResponseFormatTextConfigUnionParam{
-				OfJSONSchema: &responses.ResponseFormatTextJSONSchemaConfigParam{
-					Name:   "entity_recognition",
-					Schema: schemaMap,
-					Strict: openai.Bool(true),
-				},
-			},
-		},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("request: %w", err)
-	}
-	usage = extractUsage(resp)
-
-	outputText, err := finalJSONText(resp)
+	outputText, callUsage, err := p.requestStructuredJSON(
+		ctx,
+		modelName,
+		instructions,
+		requestBody,
+		"entity_recognition",
+		schemaMap,
+	)
+	usage = callUsage
 	if err != nil {
 		return nil, err
 	}

@@ -92,7 +92,7 @@ chmod +x script-translator-linux-amd64
 task build
 
 # 或手動編譯並注入版本（未指定時預設為 dev）
-go build -ldflags "-X main.version=v0.4.1" -o ./bin/script-translator ./cmd/script-translator
+go build -ldflags "-X main.version=v0.4.2" -o ./bin/script-translator ./cmd/script-translator
 
 # 或直接以 go run 執行
 go run ./cmd/script-translator --help
@@ -156,11 +156,12 @@ CLI 透過 [`config.Load`](internal/config/config.go) 讀取 JSON 設定檔，�
 | `language` | `to` | 否 | `"Traditional Chinese"` | 填入 prompt 模板的目標翻譯語言 |
 | `language` | `location` | 否 | 省略 `language` 時為 `"Taiwan (zh-TW)"` | 選填的目標地區／語系慣用（若手動設定 `language` 且未填 `location`，則不會自動套用） |
 | `provider` | `base_url` | 否 | — | 自訂 OpenAI-compatible API endpoint（須為 `http` / `https` URL） |
+| `provider` | `endpoint` | 否 | `"responses"` | LLM API endpoint 模式：`"responses"`（OpenAI `/v1/responses`）或 `"chat_completions"`（`/v1/chat/completions`） |
 | `provider` | `api_key` | 否 | — | 直接指定 API key（優先權高於 `api_key_file` 與 `api_key_env`） |
 | `provider` | `api_key_file` | 否 | — | 存放 API key 的檔案路徑（支援 `~` 展開，優先權高於 `api_key_env`；適合 NixOS / Home Manager secrets） |
 | `provider` | `api_key_env` | 否 | `"OPENAI_API_KEY"` | 讀取 API key 的環境變數名稱 |
 | `provider` | `wait_time` | 否 | `0` | 每次 LLM 呼叫／翻譯 batch 之間及一般錯誤重試前的等待秒數（`0` 表示不等待） |
-| `provider` | `retry_time` | 否 | `0` | 遇到 HTTP `429`、`5xx`、傳輸層 `unexpected EOF`／`EOF` 或 `net.Error`逾時時的指數退避基準秒數（依序等待 `retry_time * 2^0`, `2^1`, ...；翻譯於 `unexpected EOF` 且 `batch > 10` 時還會將 `batch_size` 動態縮小為 `max(batch * 9 / 10, 10)`，並重算 `total_batch`） |
+| `provider` | `retry_time` | 否 | `0` | 遇到 HTTP `429`、`5xx`、傳輸層 `unexpected EOF`／`EOF` 或 `net.Error`逾時時的指數退避基準秒數（依序等待 `retry_time * 2^0`, `2^1`, ...；翻譯遇到 `unexpected EOF` 或輸出截斷（`incomplete`／`length`）且 `batch > 10` 時還會將 `batch_size` 動態縮小為 `max(batch * 9 / 10, 10)`，並重算 `total_batch`） |
 | `entity_recognition` | `model` | 是 | — | 實體辨識使用的模型名稱 |
 | `entity_recognition` | `max_attempt` | 否 | `3` | 實體辨識失敗時的最大嘗試次數（`>= 1`） |
 | `entity_recognition` | `example_file` | 否 | 內建日譯繁中範例 | 選填的自訂 few-shot 範例 JSON 檔路徑（含 `input`、`output`、選填 `explanation`，支援 `~` 展開） |

@@ -1585,3 +1585,157 @@ func TestTranslateCustomLanguageAndExample(t *testing.T) {
 		t.Fatalf("expected no HTTP calls on invalid example, got %d new calls", calls.Load()-beforeCalls)
 	}
 }
+
+func TestTranslateChatCompletionsAndTruncatedShrink(t *testing.T) {
+	var seenPaths []string
+	var seenBatchSizes []int
+
+	p := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		seenPaths = append(seenPaths, r.URL.Path)
+		raw, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var req struct {
+			Messages []struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"messages"`
+			ResponseFormat struct {
+				Type       string `json:"type"`
+				JSONSchema struct {
+					Name   string `json:"name"`
+					Strict bool   `json:"strict"`
+				} `json:"json_schema"`
+			} `json:"response_format"`
+		}
+		if err := json.Unmarshal(raw, &req); err != nil {
+			t.Fatal(err)
+		}
+		if len(req.Messages) != 2 || req.Messages[0].Role != "system" || req.Messages[1].Role != "user" {
+			t.Fatalf("unexpected chat messages: %#v", req.Messages)
+		}
+		if req.ResponseFormat.Type != "json_schema" || !req.ResponseFormat.JSONSchema.Strict {
+			t.Fatalf("unexpected response_format: %#v", req.ResponseFormat)
+		}
+		_, inputJSON, ok := strings.Cut(req.Messages[1].Content, "\nInput:\n")
+		if !ok {
+			t.Fatalf("missing Input section:\n%s", req.Messages[1].Content)
+		}
+		var units []translateInputUnit
+		if err := json.Unmarshal([]byte(inputJSON), &units); err != nil {
+			t.Fatal(err)
+		}
+		seenBatchSizes = append(seenBatchSizes, len(units))
+
+		w.Header().Set("Content-Type", "application/json")
+		if len(seenBatchSizes) == 1 {
+			// First attempt returns finish_reason=length -> must trigger batch shrink 11->10 and retry.
+			_, _ = w.Write([]byte(`{
+				"id": "chatcmpl_len",
+				"object": "chat.completion",
+				"created": 1,
+				"model": "translate-model-v1",
+				"choices": [{
+					"index": 0,
+					"finish_reason": "length",
+					"message": {"role": "assistant", "content": "{\"dialogue\":["}
+				}]
+			}`))
+			return
+		}
+
+		out := make([]model.TranslatedText, len(units))
+		for i, u := range units {
+			out[i] = model.TranslatedText{Index: u.Index, Text: "「譯文」"}
+		}
+		contentBytes, err := json.Marshal(map[string]any{"dialogue": out})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := json.MarshalWrite(w, map[string]any{
+			"id":      "chatcmpl_ok",
+			"object":  "chat.completion",
+			"created": 1,
+			"model":   "translate-model-v1",
+			"choices": []map[string]any{{
+				"index":         0,
+				"finish_reason": "stop",
+				"message": map[string]any{
+					"role":    "assistant",
+					"content": string(contentBytes),
+				},
+			}},
+			"usage": map[string]any{
+				"prompt_tokens":     20,
+				"completion_tokens": 10,
+				"total_tokens":      30,
+			},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}, WithEndpoint(EndpointChatCompletions))
+
+	dialogue := make([]model.TranslateUnit, 11)
+	for i := range dialogue {
+		dialogue[i] = model.TranslateUnit{Index: i, Speaker: "ミナト", Text: "「台詞」", Bracket: "「"}
+	}
+
+	got, err := p.Translate(context.Background(), model.TranslateRequest{Dialogue: dialogue}, TranslateParams{
+		Model:      "translate-model-v1",
+		BatchSize:  11,
+		MaxAttempt: 3,
+	})
+	if err != nil {
+		t.Fatalf("Translate chat_completions failed: %v", err)
+	}
+	if len(got) != 11 {
+		t.Fatalf("expected 11 translated units, got %d", len(got))
+	}
+	for _, pth := range seenPaths {
+		if pth != "/v1/chat/completions" {
+			t.Fatalf("unexpected HTTP path %q, want /v1/chat/completions", pth)
+		}
+	}
+	if !reflect.DeepEqual(seenBatchSizes, []int{11, 10, 1}) {
+		t.Fatalf("seen batch sizes = %v, want [11 10 1]", seenBatchSizes)
+	}
+
+	// Refusal and unsupported endpoint return errors cleanly.
+	pRefuse := newTestProvider(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id": "chatcmpl_refuse",
+			"object": "chat.completion",
+			"created": 1,
+			"model": "translate-model-v1",
+			"choices": [{
+				"index": 0,
+				"finish_reason": "stop",
+				"message": {"role": "assistant", "refusal": "policy"}
+			}]
+		}`))
+	}, WithEndpoint(EndpointChatCompletions))
+	if _, err := pRefuse.Translate(context.Background(), model.TranslateRequest{
+		Dialogue: dialogue[:1],
+	}, TranslateParams{
+		Model:      "translate-model-v1",
+		BatchSize:  1,
+		MaxAttempt: 1,
+	}); err == nil || !strings.Contains(err.Error(), "refused") {
+		t.Fatalf("expected refusal error, got %v", err)
+	}
+
+	pBadEndpoint := newTestProvider(t, func(w http.ResponseWriter, _ *http.Request) {
+		t.Fatal("should not perform HTTP request on unsupported endpoint")
+	}, WithEndpoint("invalid_endpoint"))
+	if _, err := pBadEndpoint.Translate(context.Background(), model.TranslateRequest{
+		Dialogue: dialogue[:1],
+	}, TranslateParams{
+		Model:      "translate-model-v1",
+		BatchSize:  1,
+		MaxAttempt: 1,
+	}); err == nil || !strings.Contains(err.Error(), "unsupported endpoint") {
+		t.Fatalf("expected unsupported endpoint error, got %v", err)
+	}
+}

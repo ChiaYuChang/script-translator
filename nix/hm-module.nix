@@ -29,6 +29,7 @@ in {
             location = "Taiwan (zh-TW)";
           };
           provider = {
+            endpoint = "responses"; # or "chat_completions"
             base_url = "https://api.openai.com/v1";
             api_key_file = "/run/secrets/openai_api_key";
             # Or fall back to an environment variable:

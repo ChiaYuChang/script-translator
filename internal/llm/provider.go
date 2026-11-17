@@ -18,8 +18,23 @@ import (
 	"go-script-translate/internal/observation"
 )
 
+const (
+	// EndpointResponses selects the OpenAI Responses API (/v1/responses).
+	EndpointResponses = "responses"
+	// EndpointChatCompletions selects the Chat Completions API (/v1/chat/completions).
+	EndpointChatCompletions = "chat_completions"
+)
+
 // ProviderOption configures optional instrumentation and pacing on Provider.
 type ProviderOption func(*Provider)
+
+// WithEndpoint selects which OpenAI-compatible endpoint protocol Provider calls
+// ("responses" or "chat_completions"). Blank defaults to "responses".
+func WithEndpoint(endpoint string) ProviderOption {
+	return func(p *Provider) {
+		p.endpoint = strings.ToLower(strings.TrimSpace(endpoint))
+	}
+}
 
 // WithLogger sets the structured logger used by Provider.
 func WithLogger(logger *slog.Logger) ProviderOption {
@@ -69,6 +84,7 @@ func withSleep(fn func(context.Context, time.Duration) error) ProviderOption {
 // passed to each method so entity recognition and translation can use distinct models.
 type Provider struct {
 	client    *openai.Client
+	endpoint  string
 	logger    *slog.Logger
 	metrics   *observation.Metrics
 	waitTime  time.Duration
@@ -79,13 +95,17 @@ type Provider struct {
 
 func NewProvider(client *openai.Client, opts ...ProviderOption) *Provider {
 	p := &Provider{
-		client:  client,
-		sleepFn: sleepWithContext,
+		client:   client,
+		endpoint: EndpointResponses,
+		sleepFn:  sleepWithContext,
 	}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(p)
 		}
+	}
+	if p.endpoint == "" {
+		p.endpoint = EndpointResponses
 	}
 	return p
 }

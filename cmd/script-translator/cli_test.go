@@ -1586,3 +1586,107 @@ func TestPromptCommands(t *testing.T) {
 		t.Fatalf("unexpected rendered translation output:\n%s", trOut)
 	}
 }
+
+func TestScriptRunChatCompletionsEndpoint(t *testing.T) {
+	dir := t.TempDir()
+	inPath := writeTestScript(t, dir)
+	outPath := filepath.Join(dir, "out.txt")
+	cfgPath := filepath.Join(dir, "config.json")
+
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var req struct {
+			Model    string `json:"model"`
+			Messages []struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Fatal(err)
+		}
+
+		var contentText string
+		switch req.Model {
+		case "gpt-entity":
+			contentText = `{"entity":[]}`
+		case "gpt-translate":
+			_, inputJSON, ok := strings.Cut(req.Messages[1].Content, "\nInput:\n")
+			if !ok {
+				t.Fatalf("missing Input section:\n%s", req.Messages[1].Content)
+			}
+			var units []model.TranslateUnit
+			if err := json.Unmarshal([]byte(inputJSON), &units); err != nil {
+				t.Fatal(err)
+			}
+			out := make([]model.TranslatedText, 0, len(units))
+			for _, u := range units {
+				out = append(out, model.TranslatedText{Index: u.Index, Text: "「譯文」"})
+			}
+			b, err := json.Marshal(map[string]any{"dialogue": out})
+			if err != nil {
+				t.Fatal(err)
+			}
+			contentText = string(b)
+		default:
+			t.Fatalf("unexpected model: %q", req.Model)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.MarshalWrite(w, map[string]any{
+			"id":      "chatcmpl_cli",
+			"object":  "chat.completion",
+			"created": 1,
+			"model":   req.Model,
+			"choices": []map[string]any{{
+				"index":         0,
+				"finish_reason": "stop",
+				"message": map[string]any{
+					"role":    "assistant",
+					"content": contentText,
+				},
+			}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}))
+	defer srv.Close()
+
+	cfgRaw := mustMarshalJSONForTest(t, map[string]any{
+		"cache_dir": filepath.Join(dir, "cache"),
+		"provider": map[string]any{
+			"endpoint": "chat_completions",
+			"base_url": srv.URL + "/v1",
+			"api_key":  "test-key",
+		},
+		"entity_recognition": map[string]any{"model": "gpt-entity", "max_attempt": 1},
+		"translation":        map[string]any{"model": "gpt-translate", "batch_size": 10, "max_attempt": 1},
+	})
+	if err := os.WriteFile(cfgPath, cfgRaw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newRootCmd(cliDeps{
+		stdin:      &bytes.Buffer{},
+		stdout:     &bytes.Buffer{},
+		stderr:     &bytes.Buffer{},
+		stdinIsTTY: func() bool { return false },
+	})
+	cmd.SetArgs([]string{
+		"script", "run",
+		"-c", cfgPath,
+		"-i", inPath,
+		"-o", outPath,
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("script run failed: %v", err)
+	}
+	if len(paths) != 2 || paths[0] != "/v1/chat/completions" || paths[1] != "/v1/chat/completions" {
+		t.Fatalf("unexpected request paths = %v, want [/v1/chat/completions /v1/chat/completions]", paths)
+	}
+}
