@@ -697,37 +697,137 @@ func TestTranslateRejectsMissingIndexEvenWhenInputIsZero(t *testing.T) {
 	}
 }
 
-func TestTranslateRejectsMismatchedOuterDelimitersAndRetries(t *testing.T) {
-	cases := []struct {
+func TestTranslateOuterBracketRepairAndBalanceValidation(t *testing.T) {
+	// Cases repaired automatically on first attempt without retry.
+	repairCases := []struct {
 		name       string
+		bracket    string
+		sourceText string
+		modelText  string
+		wantText   string
+	}{
+		{
+			name:       "missing both dialogue quotes repaired",
+			bracket:    "「",
+			sourceText: "「おはよう」",
+			modelText:  "早安",
+			wantText:   "「早安」",
+		},
+		{
+			name:       "missing opening quote repaired",
+			bracket:    "「",
+			sourceText: "「おはよう」",
+			modelText:  "早安」",
+			wantText:   "「早安」",
+		},
+		{
+			name:       "missing closing double quote repaired",
+			bracket:    "『",
+			sourceText: "『おはよう』",
+			modelText:  "『早安",
+			wantText:   "『早安』",
+		},
+		{
+			name:       "missing monologue parens repaired",
+			bracket:    "（",
+			sourceText: "（したいな……）",
+			modelText:  "好想做啊……",
+			wantText:   "（好想做啊……）",
+		},
+		{
+			name:       "nested inner quote style change accepted",
+			bracket:    "「",
+			sourceText: "「彼は「うん」と言った」",
+			modelText:  "「他說了『嗯』」",
+			wantText:   "「他說了『嗯』」",
+		},
+		{
+			name:       "empty bracket skips bracket checks",
+			bracket:    "",
+			sourceText: "「おはよう」",
+			modelText:  "早安",
+			wantText:   "早安",
+		},
+	}
+
+	for _, tc := range repairCases {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls atomic.Int32
+			p := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				writeJSONResponse(t, w, "completed", map[string]any{
+					"type": "output_text",
+					"text": mustMarshalJSON(t, translationOutput{
+						Dialogue: model.TranslateBatchOutput{{Index: 0, Text: tc.modelText}},
+					}),
+				})
+			})
+
+			got, err := p.Translate(context.Background(), model.TranslateRequest{
+				Dialogue: []model.TranslateUnit{
+					{Index: 0, LineIndex: 1, Speaker: "俺", Text: tc.sourceText, Bracket: tc.bracket},
+				},
+			}, TranslateParams{
+				Model:      "gpt-test",
+				BatchSize:  1,
+				MaxAttempt: 1,
+			})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if calls.Load() != 1 {
+				t.Fatalf("expected 1 attempt without retry, got %d", calls.Load())
+			}
+			if len(got) != 1 || got[0].Text != tc.wantText {
+				t.Fatalf("got %#v, want Text=%q", got, tc.wantText)
+			}
+		})
+	}
+
+	// Unbalanced, premature-closing, mismatched, or empty outer bracket cases reject and retry.
+	rejectCases := []struct {
+		name       string
+		bracket    string
 		sourceText string
 		badText    string
 		goodText   string
 		wantErrSub string
 	}{
 		{
-			name:       "dropped dialogue quotes triggers retry",
+			name:       "premature middle close rejects and retries",
+			bracket:    "「",
 			sourceText: "「おはよう」",
-			badText:    "早安",
+			badText:    "「早」「安」",
 			goodText:   "「早安」",
-			wantErrSub: "must preserve outer 「」 wrapper",
+			wantErrSub: "unexpected content or extra block after closing 」",
 		},
 		{
-			name:       "dropped double corner quotes triggers retry",
-			sourceText: "『おはよう』",
-			badText:    "「早安」",
-			goodText:   "『早安』",
-			wantErrSub: "must preserve outer 『』 wrapper",
+			name:       "reversed outer quotes rejected",
+			bracket:    "「",
+			sourceText: "「おはよう」",
+			badText:    "」早安「",
+			goodText:   "「早安」",
+			wantErrSub: "unexpected content or extra block after closing 」",
 		},
 		{
-			name:       "half-width monologue parens rejected",
-			sourceText: "（したいな……）",
-			badText:    "(好想做啊……)",
-			goodText:   "（好想做啊……）",
-			wantErrSub: "must preserve outer （） wrapper",
+			name:       "unclosed inner bracket rejected",
+			bracket:    "「",
+			sourceText: "「彼は「うん」と言った」",
+			badText:    "「他說「嗯」",
+			goodText:   "「他說『嗯』」",
+			wantErrSub: "unclosed bracket inside outer 「」",
+		},
+		{
+			name:       "mismatched inner bracket rejected",
+			bracket:    "「",
+			sourceText: "「彼は「うん」と言った」",
+			badText:    "「他說『嗯」",
+			goodText:   "「他說『嗯』」",
+			wantErrSub: "mismatched bracket '」' inside outer 「」",
 		},
 		{
 			name:       "empty inner monologue rejected",
+			bracket:    "（",
 			sourceText: "（したいな……）",
 			badText:    "（   ）",
 			goodText:   "（好想做啊……）",
@@ -735,7 +835,7 @@ func TestTranslateRejectsMismatchedOuterDelimitersAndRetries(t *testing.T) {
 		},
 	}
 
-	for _, tc := range cases {
+	for _, tc := range rejectCases {
 		t.Run(tc.name, func(t *testing.T) {
 			var calls atomic.Int32
 			p := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
@@ -753,7 +853,7 @@ func TestTranslateRejectsMismatchedOuterDelimitersAndRetries(t *testing.T) {
 
 			req := model.TranslateRequest{
 				Dialogue: []model.TranslateUnit{
-					{Index: 0, LineIndex: 1, Speaker: "俺", Text: tc.sourceText},
+					{Index: 0, LineIndex: 1, Speaker: "俺", Text: tc.sourceText, Bracket: tc.bracket},
 				},
 			}
 

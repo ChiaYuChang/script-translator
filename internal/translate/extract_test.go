@@ -50,10 +50,10 @@ func TestExtract(t *testing.T) {
 	}
 
 	want := []model.TranslateUnit{
-		{Index: 0, LineIndex: 2, Speaker: "A", Text: "「AAAABBBB」"},
-		{Index: 1, LineIndex: 2, Speaker: "A", Text: "「CCCC」"},
+		{Index: 0, LineIndex: 2, Speaker: "A", Text: "「AAAABBBB」", Bracket: "「"},
+		{Index: 1, LineIndex: 2, Speaker: "A", Text: "「CCCC」", Bracket: "「"},
 		{Index: 2, LineIndex: 8, Speaker: "", Text: "第一行。第二行。"},
-		{Index: 3, LineIndex: 12, Speaker: "B", Text: "「DDD」"},
+		{Index: 3, LineIndex: 12, Speaker: "B", Text: "「DDD」", Bracket: "「"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("translations mismatch:\ngot:  %#v\nwant: %#v", got, want)
@@ -79,7 +79,7 @@ func TestExtractEmptyLinesWithinDialogue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []model.TranslateUnit{{Index: 0, LineIndex: 0, Speaker: "A", Text: "「AAABBB」"}}
+	want := []model.TranslateUnit{{Index: 0, LineIndex: 0, Speaker: "A", Text: "「AAABBB」", Bracket: "「"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
 	}
@@ -95,7 +95,7 @@ func TestExtractNamePlateWithoutText(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []model.TranslateUnit{{Index: 0, LineIndex: 2, Speaker: "B", Text: "「AAA」"}}
+	want := []model.TranslateUnit{{Index: 0, LineIndex: 2, Speaker: "B", Text: "「AAA」", Bracket: "「"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
 	}
@@ -130,18 +130,18 @@ func TestExtractMonologueAndMixedBrackets(t *testing.T) {
 	}
 
 	want := []model.TranslateUnit{
-		{Index: 0, LineIndex: 0, Speaker: "俺", Text: "（したいな……）"},
-		{Index: 1, LineIndex: 3, Speaker: "俺", Text: "（多行にわたるモノローグもひとつに）"},
-		{Index: 2, LineIndex: 7, Speaker: "俺", Text: "「XXXX（OO）XXX」"},
-		{Index: 3, LineIndex: 7, Speaker: "俺", Text: "（XXX「OO」）"},
-		{Index: 4, LineIndex: 7, Speaker: "俺", Text: "「彼は「うん」と言った」"},
-		{Index: 5, LineIndex: 7, Speaker: "俺", Text: "『XXX』"},
-		{Index: 6, LineIndex: 7, Speaker: "俺", Text: "『YYY』"},
-		{Index: 7, LineIndex: 7, Speaker: "俺", Text: "『ZZZ』"},
-		{Index: 8, LineIndex: 7, Speaker: "俺", Text: "『AAA「BBB」』"},
-		{Index: 9, LineIndex: 14, Speaker: "ネット民", Text: "『草』"},
-		{Index: 10, LineIndex: 14, Speaker: "ネット民", Text: "『わかる』"},
-		{Index: 11, LineIndex: 14, Speaker: "ネット民", Text: "『きたー！』"},
+		{Index: 0, LineIndex: 0, Speaker: "俺", Text: "（したいな……）", Bracket: "（"},
+		{Index: 1, LineIndex: 3, Speaker: "俺", Text: "（多行にわたるモノローグもひとつに）", Bracket: "（"},
+		{Index: 2, LineIndex: 7, Speaker: "俺", Text: "「XXXX（OO）XXX」", Bracket: "「"},
+		{Index: 3, LineIndex: 7, Speaker: "俺", Text: "（XXX「OO」）", Bracket: "（"},
+		{Index: 4, LineIndex: 7, Speaker: "俺", Text: "「彼は「うん」と言った」", Bracket: "「"},
+		{Index: 5, LineIndex: 7, Speaker: "俺", Text: "『XXX』", Bracket: "『"},
+		{Index: 6, LineIndex: 7, Speaker: "俺", Text: "『YYY』", Bracket: "『"},
+		{Index: 7, LineIndex: 7, Speaker: "俺", Text: "『ZZZ』", Bracket: "『"},
+		{Index: 8, LineIndex: 7, Speaker: "俺", Text: "『AAA「BBB」』", Bracket: "『"},
+		{Index: 9, LineIndex: 14, Speaker: "ネット民", Text: "『草』", Bracket: "『"},
+		{Index: 10, LineIndex: 14, Speaker: "ネット民", Text: "『わかる』", Bracket: "『"},
+		{Index: 11, LineIndex: 14, Speaker: "ネット民", Text: "『きたー！』", Bracket: "『"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("translations mismatch:\ngot:  %#v\nwant: %#v", got, want)
@@ -246,8 +246,8 @@ func TestExtractOSWithQuotes(t *testing.T) {
 			t.Fatalf("expected no warnings for balanced quotes, got %#v", warnings)
 		}
 		wantUnits := []model.TranslateUnit{
-			{Index: 0, LineIndex: 0, Speaker: "", Text: "「AAA」"},
-			{Index: 1, LineIndex: 0, Speaker: "", Text: "「BBB」"},
+			{Index: 0, LineIndex: 0, Speaker: "", Text: "「AAA」", Bracket: "「"},
+			{Index: 1, LineIndex: 0, Speaker: "", Text: "「BBB」", Bracket: "「"},
 		}
 		if !reflect.DeepEqual(units, wantUnits) {
 			t.Fatalf("units mismatch:\ngot  %#v\nwant %#v", units, wantUnits)

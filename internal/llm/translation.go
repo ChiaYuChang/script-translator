@@ -106,6 +106,13 @@ func (p *Provider) Translate(
 
 	translated := make(model.TranslateResponse, len(param.ResumeFrom), len(req.Dialogue))
 	copy(translated, param.ResumeFrom)
+	for i := range translated {
+		norm, err := normalizeAndValidateOuterBrackets(req.Dialogue[i].Bracket, translated[i].Text)
+		if err != nil {
+			return nil, fmt.Errorf("translation: resume index %d: %w", req.Dialogue[i].Index, err)
+		}
+		translated[i].Text = norm
+	}
 	startOffset := len(param.ResumeFrom)
 	if startOffset == len(req.Dialogue) {
 		return translated, nil
@@ -244,7 +251,7 @@ func validateResumePrefix(dialogue []model.TranslateUnit, resume []model.Transla
 		if strings.TrimSpace(item.Text) == "" {
 			return fmt.Errorf("translation: resume index %d has blank text", item.Index)
 		}
-		if err := validateMatchingOuterDelimiters(dialogue[i].Text, item.Text); err != nil {
+		if _, err := normalizeAndValidateOuterBrackets(dialogue[i].Bracket, item.Text); err != nil {
 			return fmt.Errorf("translation: resume index %d: %w", item.Index, err)
 		}
 	}
@@ -373,9 +380,11 @@ func parseAndValidateTranslationBatch(
 		if !ok {
 			return nil, fmt.Errorf("missing index %d", unit.Index)
 		}
-		if err := validateMatchingOuterDelimiters(unit.Text, item.Text); err != nil {
+		normText, err := normalizeAndValidateOuterBrackets(unit.Bracket, item.Text)
+		if err != nil {
 			return nil, fmt.Errorf("index %d: %w", unit.Index, err)
 		}
+		item.Text = normText
 		ordered = append(ordered, item)
 	}
 	return ordered, nil
@@ -387,26 +396,73 @@ var outerDialogueDelimiters = map[rune]rune{
 	'『': '』',
 }
 
-func validateMatchingOuterDelimiters(source, translated string) error {
-	trimmedSrc := strings.TrimSpace(source)
-	trimmedDst := strings.TrimSpace(translated)
-	openRune, _ := utf8.DecodeRuneInString(trimmedSrc)
+var outerDialogueCloseDelimiters = func() map[rune]rune {
+	m := make(map[rune]rune, len(outerDialogueDelimiters))
+	for openRune, closeRune := range outerDialogueDelimiters {
+		m[closeRune] = openRune
+	}
+	return m
+}()
+
+// normalizeAndValidateOuterBrackets skips bracket checks when unit.Bracket is
+// empty. When set, it repairs missing outer opening/closing delimiters and
+// validates that the outer bracket wraps the entire line with balanced inner
+// brackets and non-blank content.
+func normalizeAndValidateOuterBrackets(bracket, translated string) (string, error) {
+	if strings.TrimSpace(bracket) == "" {
+		return translated, nil
+	}
+
+	openRune, _ := utf8.DecodeRuneInString(bracket)
 	closeRune, ok := outerDialogueDelimiters[openRune]
 	if !ok {
-		return nil
+		return "", fmt.Errorf("unsupported outer bracket %q", bracket)
 	}
-	lastRune, _ := utf8.DecodeLastRuneInString(trimmedSrc)
-	if lastRune != closeRune {
-		return nil
+
+	trimmed := strings.TrimSpace(translated)
+	if trimmed == "" {
+		return "", fmt.Errorf("empty content inside outer %c%c", openRune, closeRune)
 	}
 
 	openMark, closeMark := string(openRune), string(closeRune)
-	if !strings.HasPrefix(trimmedDst, openMark) || !strings.HasSuffix(trimmedDst, closeMark) {
-		return fmt.Errorf("must preserve outer %s%s wrapper", openMark, closeMark)
+	candidate := trimmed
+	if !strings.HasPrefix(candidate, openMark) {
+		candidate = openMark + candidate
 	}
-	inner := strings.TrimSuffix(strings.TrimPrefix(trimmedDst, openMark), closeMark)
+	if !strings.HasSuffix(candidate, closeMark) {
+		candidate += closeMark
+	}
+
+	if err := validateSingleOuterBracketBalance(candidate, openRune, closeRune); err != nil {
+		return "", err
+	}
+	return candidate, nil
+}
+
+func validateSingleOuterBracketBalance(s string, expectedOpen, expectedClose rune) error {
+	var stack []rune
+	for i, r := range s {
+		if expected, isOpen := outerDialogueDelimiters[r]; isOpen {
+			stack = append(stack, expected)
+			continue
+		}
+		if _, isClose := outerDialogueCloseDelimiters[r]; isClose {
+			if len(stack) == 0 || stack[len(stack)-1] != r {
+				return fmt.Errorf("mismatched bracket %q inside outer %c%c", r, expectedOpen, expectedClose)
+			}
+			stack = stack[:len(stack)-1]
+			if len(stack) == 0 && i+utf8.RuneLen(r) != len(s) {
+				return fmt.Errorf("unexpected content or extra block after closing %c", expectedClose)
+			}
+		}
+	}
+	if len(stack) != 0 {
+		return fmt.Errorf("unclosed bracket inside outer %c%c", expectedOpen, expectedClose)
+	}
+
+	inner := strings.TrimSuffix(strings.TrimPrefix(s, string(expectedOpen)), string(expectedClose))
 	if strings.TrimSpace(inner) == "" {
-		return fmt.Errorf("empty content inside outer %s%s", openMark, closeMark)
+		return fmt.Errorf("empty content inside outer %c%c", expectedOpen, expectedClose)
 	}
 	return nil
 }

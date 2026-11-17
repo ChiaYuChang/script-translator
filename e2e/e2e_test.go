@@ -800,3 +800,164 @@ func assertMetricsTypes(t *testing.T, path, wantCallType, wantFinalType string) 
 		t.Fatalf("%s missing expected metric type %q", path, wantCallType)
 	}
 }
+
+func TestEndToEndBracketHandling(t *testing.T) {
+	if *liveAPI {
+		t.Skip("skipping synthetic fixture test under -live")
+	}
+
+	e2eDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	repoRoot, err := filepath.Abs(filepath.Join(e2eDir, ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	binPath := filepath.Join(t.TempDir(), "script-translator")
+	buildCmd := exec.Command("go", "build", "-o", binPath, "./cmd/script-translator")
+	buildCmd.Dir = repoRoot
+	if out, err := buildCmd.CombinedOutput(); err != nil {
+		t.Fatalf("build CLI binary: %v\n%s", err, string(out))
+	}
+
+	workDir := t.TempDir()
+	scriptPath := filepath.Join(workDir, "script.txt")
+	scriptContent := strings.Join([]string{
+		"<NAME_PLATE>ネット民",
+		"　『草』　『わかる』",
+		"<NAME_PLATE>朝倉ユイ",
+		"「おはよう」",
+		"<NAME_PLATE>",
+		"午後の教室。",
+		"<PAUSE>",
+	}, "\n") + "\n"
+	if err := os.WriteFile(scriptPath, []byte(scriptContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	dictPath := filepath.Join(workDir, "dict.json")
+	if err := entitystore.Save(dictPath, model.EntityMapping{
+		Entities: []model.Entity{
+			{ID: 1, Canonical: model.NamePair{From: "朝倉ユイ", To: "朝倉由依"}},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var mu sync.Mutex
+	var translateCalls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var req map[string]any
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Fatal(err)
+		}
+		modelName, _ := req["model"].(string)
+
+		var outText string
+		switch modelName {
+		case "gpt-entity":
+			outText = `{"entity":[]}`
+		case "gpt-translate":
+			mu.Lock()
+			translateCalls++
+			callNum := translateCalls
+			mu.Unlock()
+
+			if callNum == 1 {
+				// Attempt 1 returns premature split brackets for index 2 -> must reject and retry.
+				b, _ := json.Marshal(map[string]any{
+					"dialogue": []map[string]any{
+						{"index": 0, "text": "『笑死』"},
+						{"index": 1, "text": "超懂"},
+						{"index": 2, "text": "「早」「安」"},
+						{"index": 3, "text": "午後的教室。"},
+					},
+				})
+				outText = string(b)
+			} else {
+				// Attempt 2 omits outer brackets on index 1 and 2 -> must auto-repair via unit.Bracket.
+				b, _ := json.Marshal(map[string]any{
+					"dialogue": []map[string]any{
+						{"index": 0, "text": "『笑死』"},
+						{"index": 1, "text": "超懂"},
+						{"index": 2, "text": "早安"},
+						{"index": 3, "text": "午後的教室。"},
+					},
+				})
+				outText = string(b)
+			}
+		default:
+			t.Fatalf("unexpected model: %q", modelName)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.MarshalWrite(w, map[string]any{
+			"id":     "resp_bracket_e2e",
+			"object": "response",
+			"status": "completed",
+			"usage":  map[string]any{"input_tokens": 10, "output_tokens": 10, "total_tokens": 20},
+			"output": []map[string]any{{
+				"type":    "message",
+				"status":  "completed",
+				"role":    "assistant",
+				"content": []map[string]any{{"type": "output_text", "text": outText}},
+			}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}))
+	defer srv.Close()
+
+	cfgPath := filepath.Join(workDir, "config.json")
+	cfgBytes, err := json.Marshal(map[string]any{
+		"cache_dir": filepath.Join(workDir, "cache"),
+		"provider": map[string]any{
+			"base_url": srv.URL + "/v1",
+			"api_key":  "test-fixture-key",
+		},
+		"entity_recognition": map[string]any{"model": "gpt-entity", "max_attempt": 1},
+		"translation":        map[string]any{"model": "gpt-translate", "batch_size": 10, "max_attempt": 2},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfgPath, cfgBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	outPath := filepath.Join(workDir, "translated.txt")
+	runCLI(t, binPath, repoRoot, nil, nil,
+		"script", "run",
+		"-c", cfgPath,
+		"-i", scriptPath,
+		"-d", dictPath,
+		"-o", outPath,
+	)
+
+	if translateCalls != 2 {
+		t.Fatalf("expected 2 translation calls (1 retry on malformed brackets + repair pass), got %d", translateCalls)
+	}
+	gotOut, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantOut := strings.Join([]string{
+		"<NAME_PLATE>ネット民",
+		"『笑死』",
+		"『超懂』",
+		"<NAME_PLATE>朝倉由依",
+		"「早安」",
+		"<NAME_PLATE>",
+		"午後的教室。",
+		"<PAUSE>",
+	}, "\n") + "\n"
+	if string(gotOut) != wantOut {
+		t.Fatalf("assembled output mismatch:\ngot:\n%s\nwant:\n%s", string(gotOut), wantOut)
+	}
+}

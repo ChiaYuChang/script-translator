@@ -92,7 +92,7 @@ chmod +x script-translator-linux-amd64
 task build
 
 # 或手動編譯並注入版本（未指定時預設為 dev）
-go build -ldflags "-X main.version=v0.4.0" -o ./bin/script-translator ./cmd/script-translator
+go build -ldflags "-X main.version=v0.4.1" -o ./bin/script-translator ./cmd/script-translator
 
 # 或直接以 go run 執行
 go run ./cmd/script-translator --help

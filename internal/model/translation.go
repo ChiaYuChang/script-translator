@@ -6,12 +6,14 @@ import "strings"
 // Index is the 0-based sequential utterance index across the script (stable across
 // metadata edits); LineIndex is the 0-based source line number of its owning <NAME_PLATE>.
 // An empty Speaker means OS (narration).
-// Text preserves outer Japanese dialogue quotes (「...」) or monologue parentheses (（...）) when present.
+// Text preserves the full source dialogue or narration text verbatim.
+// Bracket optionally records the outer opening delimiter ("「", "『", or "（") for cleanly extracted blocks.
 type TranslateUnit struct {
 	Index     int    `json:"index"`
 	LineIndex int    `json:"line_index"`
 	Speaker   string `json:"name"`
 	Text      string `json:"text"`
+	Bracket   string `json:"bracket,omitzero"`
 }
 
 func (t TranslateUnit) Transcript() string {

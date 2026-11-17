@@ -68,20 +68,20 @@ func ExtractWithWarnings(script model.Script) ([]model.TranslateUnit, []model.Un
 		}
 
 		content := strings.Join(parts, "")
-		var texts []string
+		var segments []dialogueSegment
 		if speaker == "" {
 			// OS: normally plain narration, though unnamed/off-screen speech or narration quoting
 			// 「...」/『...』 can also appear under an empty <NAME_PLATE>. Split balanced utterances cleanly;
 			// otherwise keep the block as 1 unit (and warn on unbalanced/mixed leading/trailing quotes).
 			if startsWithDialogueOpen(content) {
 				if segs, err := extractDialogue(content); err == nil {
-					texts = segs
+					segments = segs
 				} else {
 					warnings = append(warnings, fmt.Sprintf(
 						"line %d (OS): could not split quoted text (%v); keeping block as 1 unit",
 						line.Index, err,
 					))
-					texts = []string{content}
+					segments = []dialogueSegment{{text: content}}
 				}
 			} else {
 				if strings.HasSuffix(content, "」") || strings.HasSuffix(content, "』") {
@@ -90,28 +90,29 @@ func ExtractWithWarnings(script model.Script) ([]model.TranslateUnit, []model.Un
 						line.Index,
 					))
 				}
-				texts = []string{content}
+				segments = []dialogueSegment{{text: content}}
 			}
 		} else {
 			// Dialogue: each 「...」, 『...』, or （...） utterance becomes one independent TranslateUnit.
 			// If delimiters are unbalanced (for instance split by a command), fall back to
 			// keeping the entire block as a single unit and emit a warning.
 			var err error
-			texts, err = extractDialogue(content)
+			segments, err = extractDialogue(content)
 			if err != nil {
 				warnings = append(warnings, fmt.Sprintf(
 					"line %d (speaker %q): could not split utterances (%v); keeping block as 1 unit",
 					line.Index, speaker, err,
 				))
-				texts = []string{content}
+				segments = []dialogueSegment{{text: content}}
 			}
 		}
-		for _, seg := range texts {
+		for _, seg := range segments {
 			translations = append(translations, model.TranslateUnit{
 				Index:     len(translations),
 				LineIndex: line.Index,
 				Speaker:   speaker,
-				Text:      seg,
+				Text:      seg.text,
+				Bracket:   seg.bracket,
 			})
 		}
 		i = j
@@ -162,14 +163,20 @@ func RetainedToUnits(lines []model.ScriptLine) []model.Unit {
 	return out
 }
 
-func extractDialogue(text string) ([]string, error) {
+type dialogueSegment struct {
+	text    string
+	bracket string
+}
+
+func extractDialogue(text string) ([]dialogueSegment, error) {
 	if text == "" {
 		return nil, fmt.Errorf("%w: no valid dialogue block found in %q", ErrInvalidDialogueFormat, text)
 	}
 
 	var (
-		dialogues []string
+		dialogues []dialogueSegment
 		stack     []rune
+		openMark  string
 		openLen   int
 		startByte = -1
 	)
@@ -191,6 +198,7 @@ func extractDialogue(text string) ([]string, error) {
 				)
 			}
 			stack = append(stack, expectedClose)
+			openMark = string(r)
 			openLen = utf8.RuneLen(r)
 			startByte = i
 			continue
@@ -219,9 +227,13 @@ func extractDialogue(text string) ([]string, error) {
 				if strings.TrimSpace(inner) == "" {
 					return nil, fmt.Errorf("%w: empty dialogue block %q", ErrInvalidDialogueFormat, segment)
 				}
-				dialogues = append(dialogues, segment)
+				dialogues = append(dialogues, dialogueSegment{
+					text:    segment,
+					bracket: openMark,
+				})
 				startByte = -1
 				openLen = 0
+				openMark = ""
 			}
 		}
 	}

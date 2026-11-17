@@ -93,7 +93,7 @@ chmod +x script-translator-linux-amd64
 task build
 
 # Or build manually with a version string (defaults to dev if omitted)
-go build -ldflags "-X main.version=v0.4.0" -o ./bin/script-translator ./cmd/script-translator
+go build -ldflags "-X main.version=v0.4.1" -o ./bin/script-translator ./cmd/script-translator
 
 # Or run directly via go run
 go run ./cmd/script-translator --help
