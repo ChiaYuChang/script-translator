@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -132,52 +133,118 @@ func initConfigAndObserver(configPath string, deps cliDeps) (config.Config, *obs
 	if err != nil {
 		return config.Config{}, nil, err
 	}
+	if cfg.LegacyProviderUsed {
+		obs.Logger.Warn("top-level config field \"provider\" is deprecated; define it under \"providers.default\" instead",
+			slog.String("config", resolvedConfigPath),
+		)
+	}
 	return cfg, obs, nil
 }
 
-func initProvider(cfg config.Config, saveRawDir, rawPrefix string, obs *observation.Observer) (*llm.Provider, error) {
-	apiKey, err := cfg.Provider.ResolveAPIKey()
+func initProviderFromConfig(
+	name string,
+	provCfg config.ProviderConfig,
+	extraOpts []option.RequestOption,
+	obs *observation.Observer,
+) (*llm.Provider, error) {
+	apiKey, err := provCfg.ResolveAPIKey()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("providers.%s: %w", name, err)
 	}
 
-	opts := []option.RequestOption{
-		option.WithAPIKey(apiKey),
-		option.WithMaxRetries(0),
+	opts := make([]option.RequestOption, 0, 2+len(extraOpts)+1)
+	opts = append(opts, option.WithAPIKey(apiKey), option.WithMaxRetries(0))
+	if provCfg.BaseURL != "" {
+		opts = append(opts, option.WithBaseURL(provCfg.BaseURL))
 	}
-	if cfg.Provider.BaseURL != "" {
-		opts = append(opts, option.WithBaseURL(cfg.Provider.BaseURL))
+	opts = append(opts, extraOpts...)
+	client := openai.NewClient(opts...)
+	provider := llm.NewProvider(
+		&client,
+		llm.WithEndpoint(provCfg.Endpoint),
+		llm.WithLogger(obs.Logger),
+		llm.WithMetrics(obs.Metrics),
+		llm.WithWaitTime(time.Duration(provCfg.WaitTime)*time.Second),
+		llm.WithRetryTime(time.Duration(provCfg.RetryTime)*time.Second),
+	)
+	return provider, nil
+}
+
+func normalizeProviderName(name string) string {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return config.DefaultProviderName
 	}
+	return trimmed
+}
+
+func initProviders(
+	cfg config.Config,
+	saveRawDir, rawPrefix string,
+	obs *observation.Observer,
+	names ...string,
+) (map[string]*llm.Provider, error) {
+	var extraOpts []option.RequestOption
 	if dir := strings.TrimSpace(saveRawDir); dir != "" {
 		resolvedRawDir, err := pathutil.ExpandHome(dir)
 		if err != nil {
 			return nil, fmt.Errorf("resolve --save-raw directory: %w", err)
 		}
-		opts = append(opts, rawResponseMiddleware(resolvedRawDir, rawPrefix, obs))
+		extraOpts = append(extraOpts, rawResponseMiddleware(resolvedRawDir, rawPrefix, obs))
 	}
-	client := openai.NewClient(opts...)
-	provider := llm.NewProvider(
-		&client,
-		llm.WithEndpoint(cfg.Provider.Endpoint),
-		llm.WithLogger(obs.Logger),
-		llm.WithMetrics(obs.Metrics),
-		llm.WithWaitTime(time.Duration(cfg.Provider.WaitTime)*time.Second),
-		llm.WithRetryTime(time.Duration(cfg.Provider.RetryTime)*time.Second),
-	)
-	return provider, nil
+
+	providers := make(map[string]*llm.Provider, len(names))
+	for _, rawName := range names {
+		name := normalizeProviderName(rawName)
+		if providers[name] != nil {
+			continue
+		}
+		provCfg, err := cfg.ProviderByName(name)
+		if err != nil {
+			return nil, err
+		}
+		p, err := initProviderFromConfig(name, provCfg, extraOpts, obs)
+		if err != nil {
+			return nil, err
+		}
+		providers[name] = p
+	}
+	return providers, nil
 }
 
-func initObserverAndProvider(configPath, saveRawDir, rawPrefix string, deps cliDeps) (config.Config, *observation.Observer, *llm.Provider, error) {
+type llmStage uint8
+
+const (
+	stageEntityRecognition llmStage = iota
+	stageTranslation
+)
+
+func initObserverAndProvider(
+	configPath, saveRawDir, rawPrefix string,
+	deps cliDeps,
+	stage llmStage,
+) (config.Config, *observation.Observer, *llm.Provider, error) {
 	cfg, obs, err := initConfigAndObserver(configPath, deps)
 	if err != nil {
 		return config.Config{}, nil, nil, err
 	}
-	provider, err := initProvider(cfg, saveRawDir, rawPrefix, obs)
+	var rawName string
+	switch stage {
+	case stageEntityRecognition:
+		rawName = cfg.EntityRecognition.Provider
+	case stageTranslation:
+		rawName = cfg.Translation.Provider
+	default:
+		_ = obs.Close()
+		return config.Config{}, nil, nil, fmt.Errorf("unknown stage %d", stage)
+	}
+	name := normalizeProviderName(rawName)
+	providers, err := initProviders(cfg, saveRawDir, rawPrefix, obs, name)
 	if err != nil {
 		_ = obs.Close()
 		return config.Config{}, nil, nil, err
 	}
-	return cfg, obs, provider, nil
+	return cfg, obs, providers[name], nil
 }
 
 func rawResponseMiddleware(dir, prefix string, obs *observation.Observer) option.RequestOption {

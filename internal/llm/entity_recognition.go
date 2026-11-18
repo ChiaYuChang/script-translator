@@ -43,6 +43,7 @@ func mustRenderDefaultEntityRecognitionPrompt() string {
 
 // RecognizeEntitiesParams configures a RecognizeEntities call.
 type RecognizeEntitiesParams struct {
+	Provider    string                           `json:"provider,omitzero" jsonschema:"Provider key in top-level providers map (defaults to \"default\")"`
 	Model       string                           `json:"model" jsonschema:"Model name for entity recognition"`
 	Dictionary  []model.Entity                   `json:"-"`
 	Language    prompt.Language                  `json:"-"`

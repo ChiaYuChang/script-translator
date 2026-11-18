@@ -114,19 +114,30 @@ Configuration is loaded and validated against a strict JSON Schema via [`config.
     "to": "Traditional Chinese",
     "location": "Taiwan (zh-TW)"
   },
-  "provider": {
-    "base_url": "https://api.openai.com/v1",
-    "api_key_env": "OPENAI_API_KEY",
-    "wait_time": 0,
-    "retry_time": 0
+  "providers": {
+    "openai": {
+      "endpoint": "responses",
+      "base_url": "https://api.openai.com/v1",
+      "api_key_env": "OPENAI_API_KEY",
+      "wait_time": 0,
+      "retry_time": 0
+    },
+    "local": {
+      "endpoint": "chat_completions",
+      "base_url": "http://127.0.0.1:52625/v1/",
+      "api_key": "dummy",
+      "retry_time": 2
+    }
   },
   "entity_recognition": {
+    "provider": "openai",
     "model": "gpt-4.1-mini",
     "max_attempt": 3
   },
   "translation": {
-    "model": "gpt-4.1",
-    "batch_size": 20,
+    "provider": "local",
+    "model": "gemma4-it:12b",
+    "batch_size": 15,
     "max_attempt": 3
   },
   "observation": {
@@ -156,16 +167,18 @@ Configuration is loaded and validated against a strict JSON Schema via [`config.
 | `language` | `from` | No | `"Japanese"` | Source script language injected into prompt templates |
 | `language` | `to` | No | `"Traditional Chinese"` | Target localization language injected into prompt templates |
 | `language` | `location` | No | `"Taiwan (zh-TW)"` (when `language` omitted) | Optional target region/locale (omitted by default when `language` is explicitly configured) |
-| `provider` | `endpoint` | No | `"responses"` | OpenAI-compatible endpoint protocol (`"responses"` for `/v1/responses`, `"chat_completions"` for `/v1/chat/completions`) |
-| `provider` | `base_url` | No | — | Custom OpenAI-compatible API endpoint (`http` / `https` URL) |
-| `provider` | `api_key` | No | — | Explicit inline API key (overrides `api_key_file` and `api_key_env`) |
-| `provider` | `api_key_file` | No | — | Path to file containing the API key (supports `~` expansion; overrides `api_key_env`; ideal for NixOS / Home Manager secrets) |
-| `provider` | `api_key_env` | No | `"OPENAI_API_KEY"` | Environment variable name holding the API key |
-| `provider` | `wait_time` | No | `0` | Delay in seconds between LLM calls / translation batches and before retrying general errors (`0` disables waiting) |
-| `provider` | `retry_time` | No | `0` | Base delay in seconds for exponential backoff (`retry_time * 2^0`, `2^1`, ...) on HTTP `429`, `5xx`, transport `unexpected EOF` / `EOF`, and `net.Error` timeouts; on `unexpected EOF` or truncated output (`incomplete` / `length`), translation also dynamically shrinks `batch_size` (`max(batch * 9 / 10, 10)` when `batch > 10`) and recalculates `total_batch` |
+| `providers.<name>` | `endpoint` | No | `"responses"` | OpenAI-compatible endpoint protocol (`"responses"` for `/v1/responses`, `"chat_completions"` for `/v1/chat/completions`); legacy top-level `provider` is also accepted and mapped to `providers["default"]` |
+| `providers.<name>` | `base_url` | No | — | Custom OpenAI-compatible API endpoint (`http` / `https` URL) |
+| `providers.<name>` | `api_key` | No | — | Explicit inline API key (overrides `api_key_file` and `api_key_env`) |
+| `providers.<name>` | `api_key_file` | No | — | Path to file containing the API key (supports `~` expansion; overrides `api_key_env`; ideal for NixOS / Home Manager secrets) |
+| `providers.<name>` | `api_key_env` | No | `"OPENAI_API_KEY"` | Environment variable name holding the API key |
+| `providers.<name>` | `wait_time` | No | `0` | Delay in seconds between LLM calls / translation batches and before retrying general errors (`0` disables waiting) |
+| `providers.<name>` | `retry_time` | No | `0` | Base delay in seconds for exponential backoff (`retry_time * 2^0`, `2^1`, ...) on HTTP `429`, `5xx`, transport `unexpected EOF` / `EOF`, and `net.Error` timeouts; on `unexpected EOF` or truncated output (`incomplete` / `length`), translation also dynamically shrinks `batch_size` (`max(batch * 9 / 10, 10)` when `batch > 10`) and recalculates `total_batch` |
+| `entity_recognition` | `provider` | No | `"default"` | Provider key in `providers` used for entity recognition (must exist in `providers`) |
 | `entity_recognition` | `model` | Yes | — | Model name used for entity recognition |
 | `entity_recognition` | `max_attempt` | No | `3` | Maximum attempts on entity recognition failure (`>= 1`) |
 | `entity_recognition` | `example_file` | No | Built-in Japanese→zh-TW example | Optional path to a custom few-shot example JSON file (`input`, `output`, optional `explanation`; supports `~` expansion) |
+| `translation` | `provider` | No | `"default"` | Provider key in `providers` used for translation (must exist in `providers`) |
 | `translation` | `model` | Yes | — | Model name used for dialogue translation |
 | `translation` | `batch_size` | No | `20` | Number of dialogue units per translation batch (`>= 1`) |
 | `translation` | `max_attempt` | No | `3` | Maximum attempts per translation batch (`>= 1`) |

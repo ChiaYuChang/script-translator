@@ -370,10 +370,12 @@ func TestEndToEndRateLimit429RetryAndResume(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cfg.Provider.BaseURL = srv.URL + "/v1"
-		cfg.Provider.APIKey = "test-429-key"
-		cfg.Provider.WaitTime = 0
-		cfg.Provider.RetryTime = 1
+		prov := cfg.Providers[config.DefaultProviderName]
+		prov.BaseURL = srv.URL + "/v1"
+		prov.APIKey = "test-429-key"
+		prov.WaitTime = 0
+		prov.RetryTime = 1
+		cfg.Providers[config.DefaultProviderName] = prov
 		cfg.EntityRecognition.MaxAttempt = maxAttempt
 		cfg.Translation.MaxAttempt = maxAttempt
 		cfg.Observation.Log.Console.Enable = false
@@ -664,12 +666,14 @@ func rewriteConfigForTempObs(t *testing.T, srcPath, workDir, prefix, overrideBas
 	if err != nil {
 		t.Fatalf("load template config %s: %v", srcPath, err)
 	}
+	p := cfg.Providers[config.DefaultProviderName]
 	if overrideBaseURL != "" {
-		cfg.Provider.BaseURL = overrideBaseURL
+		p.BaseURL = overrideBaseURL
 	}
 	if overrideAPIKey != "" {
-		cfg.Provider.APIKey = overrideAPIKey
+		p.APIKey = overrideAPIKey
 	}
+	cfg.Providers[config.DefaultProviderName] = p
 	cfg.Observation.Log.Console.Enable = false
 	cfg.Observation.Log.File.Enable = true
 	cfg.Observation.Log.File.File = filepath.Join(workDir, prefix+"_logs.jsonl")
@@ -959,5 +963,246 @@ func TestEndToEndBracketHandling(t *testing.T) {
 	}, "\n") + "\n"
 	if string(gotOut) != wantOut {
 		t.Fatalf("assembled output mismatch:\ngot:\n%s\nwant:\n%s", string(gotOut), wantOut)
+	}
+}
+
+func TestEndToEndMultiProvider(t *testing.T) {
+	if *liveAPI {
+		t.Skip("skipping multi-provider fixture replay under -live")
+	}
+
+	e2eDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	repoRoot, err := filepath.Abs(filepath.Join(e2eDir, ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	nvidiaFixture, err := os.ReadFile(filepath.Join(e2eDir, "fixtures_multi", "nvidia_recognize_001.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	trFixtures := loadFixtureFiles(t, filepath.Join(e2eDir, "fixtures", "translate_*.json"))
+	if len(trFixtures) == 0 {
+		t.Skip("missing E2E translation fixtures")
+	}
+
+	binPath := filepath.Join(t.TempDir(), "script-translator")
+	buildCmd := exec.Command("go", "build", "-o", binPath, "./cmd/script-translator")
+	buildCmd.Dir = repoRoot
+	if out, err := buildCmd.CombinedOutput(); err != nil {
+		t.Fatalf("build CLI binary: %v\n%s", err, string(out))
+	}
+
+	var mu sync.Mutex
+	var nvidiaCalls, openRouterCalls int
+
+	nvidiaSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/chat/completions" {
+			http.Error(w, "unexpected path", http.StatusNotFound)
+			return
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer test-nvidia-key" {
+			t.Errorf("nvidia auth = %q, want Bearer test-nvidia-key", got)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read nvidia body: %v", err)
+		}
+		var req struct {
+			Model          string `json:"model"`
+			ResponseFormat struct {
+				Type       string `json:"type"`
+				JSONSchema struct {
+					Name string `json:"name"`
+				} `json:"json_schema"`
+			} `json:"response_format"`
+			Messages []struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Errorf("decode nvidia request: %v", err)
+			http.Error(w, "bad json", http.StatusBadRequest)
+			return
+		}
+		if req.Model != "nvidia/nemotron-3-ultra-550b-a55b" ||
+			req.ResponseFormat.Type != "json_schema" ||
+			req.ResponseFormat.JSONSchema.Name != "entity_recognition" ||
+			len(req.Messages) != 2 ||
+			!strings.Contains(req.Messages[1].Content, "KnownEntities:\n") ||
+			!strings.Contains(req.Messages[1].Content, "\nTranscript:\n") {
+			t.Errorf("unexpected nvidia chat completion payload: %+v", req)
+			http.Error(w, "unexpected payload", http.StatusBadRequest)
+			return
+		}
+
+		mu.Lock()
+		nvidiaCalls++
+		mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(nvidiaFixture)
+	}))
+	defer nvidiaSrv.Close()
+
+	openRouterSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/responses" {
+			http.Error(w, "unexpected path", http.StatusNotFound)
+			return
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer test-openrouter-key" {
+			t.Errorf("openrouter auth = %q, want Bearer test-openrouter-key", got)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read openrouter body: %v", err)
+		}
+		var req struct {
+			Model string `json:"model"`
+			Input string `json:"input"`
+			Text  struct {
+				Format struct {
+					Name string `json:"name"`
+				} `json:"format"`
+			} `json:"text"`
+		}
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Errorf("decode openrouter request: %v", err)
+			http.Error(w, "bad json", http.StatusBadRequest)
+			return
+		}
+		if req.Model != "nvidia/nemotron-3.5-super-vl:free" ||
+			req.Text.Format.Name != "script_translation" ||
+			!strings.Contains(req.Input, "Entries:\n") ||
+			!strings.Contains(req.Input, "\nInput:\n") {
+			t.Errorf("unexpected openrouter response payload: %+v", req)
+			http.Error(w, "unexpected payload", http.StatusBadRequest)
+			return
+		}
+
+		mu.Lock()
+		batchIdx := openRouterCalls % len(trFixtures)
+		openRouterCalls++
+		mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(trFixtures[batchIdx])
+	}))
+	defer openRouterSrv.Close()
+
+	workDir := t.TempDir()
+	cacheDir := filepath.Join(workDir, "cache")
+	rawDir := filepath.Join(workDir, "raw")
+	logPath := filepath.Join(workDir, "multi_logs.jsonl")
+	metricPath := filepath.Join(workDir, "multi_metrics.jsonl")
+	outPath := filepath.Join(workDir, "translated.txt")
+	cfgPath := filepath.Join(workDir, "config.json")
+
+	cfgBytes, err := json.Marshal(map[string]any{
+		"cache_dir": cacheDir,
+		"providers": map[string]any{
+			"nvidia": map[string]any{
+				"endpoint":    "chat_completions",
+				"base_url":    nvidiaSrv.URL + "/v1",
+				"api_key_env": "NVIDIA_TEST_KEY",
+			},
+			"openrouter": map[string]any{
+				"endpoint":    "responses",
+				"base_url":    openRouterSrv.URL + "/v1",
+				"api_key_env": "OPENROUTER_TEST_KEY",
+			},
+			"unused": map[string]any{
+				"api_key_env": "UNUSED_TEST_KEY",
+			},
+		},
+		"entity_recognition": map[string]any{
+			"provider":    "nvidia",
+			"model":       "nvidia/nemotron-3-ultra-550b-a55b",
+			"max_attempt": 1,
+		},
+		"translation": map[string]any{
+			"provider":    "openrouter",
+			"model":       "nvidia/nemotron-3.5-super-vl:free",
+			"batch_size":  8,
+			"max_attempt": 1,
+		},
+		"observation": map[string]any{
+			"log": map[string]any{
+				"level":   "info",
+				"console": map[string]any{"enable": false},
+				"file":    map[string]any{"enable": true, "file": logPath},
+			},
+			"metric": map[string]any{"enable": true, "file": metricPath},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfgPath, cfgBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	env := []string{
+		"NVIDIA_TEST_KEY=test-nvidia-key",
+		"OPENROUTER_TEST_KEY=test-openrouter-key",
+		"UNUSED_TEST_KEY=",
+	}
+	runCLI(t, binPath, repoRoot, env, nil,
+		"script", "run",
+		"-c", cfgPath,
+		"-i", filepath.Join(e2eDir, "data", "e2e_scene_ver1.txt"),
+		"-d", filepath.Join(e2eDir, "data", "seed_entities.json"),
+		"-o", outPath,
+		"--save-raw", rawDir,
+	)
+
+	if nvidiaCalls != 1 || openRouterCalls != 4 {
+		t.Fatalf("unexpected call counts: nvidia=%d openrouter=%d, want 1 and 4", nvidiaCalls, openRouterCalls)
+	}
+
+	outBytes, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outText := string(outBytes)
+	assertVer1ScriptOutput(t, outText)
+	if !strings.Contains(outText, "<NAME_PLATE>霧島蓮") {
+		t.Fatalf("expected assembled output to contain recognized entity 霧島蓮:\n%s", outText)
+	}
+
+	assertJSONLFile(t, logPath, 2)
+	assertMetricsTypes(t, metricPath, "entity_usage", "total_usage")
+	assertMetricsTypes(t, metricPath, "translation_batch_usage", "total_usage")
+
+	metricBytes, err := os.ReadFile(metricPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(metricBytes)), "\n")
+	var totalEv struct {
+		Requests int `json:"requests"`
+		Usage    struct {
+			ReasoningTokens int `json:"reasoning_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &totalEv); err != nil {
+		t.Fatalf("decode total_usage metric: %v", err)
+	}
+	if totalEv.Requests != 5 || totalEv.Usage.ReasoningTokens < 3164 {
+		t.Fatalf("unexpected multi-provider total_usage: %+v", totalEv)
+	}
+
+	for _, name := range []string{"run_001.json", "run_002.json", "run_003.json", "run_004.json", "run_005.json"} {
+		if _, err := os.Stat(filepath.Join(rawDir, name)); err != nil {
+			t.Fatalf("expected saved raw fixture %s: %v", name, err)
+		}
 	}
 }

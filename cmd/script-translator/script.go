@@ -147,7 +147,7 @@ func newScriptRecognizeCmd(deps cliDeps) *cobra.Command {
 				return err
 			}
 
-			cfg, obs, provider, err := initObserverAndProvider(configPath, saveRawDir, "recognize", deps)
+			cfg, obs, provider, err := initObserverAndProvider(configPath, saveRawDir, "recognize", deps, stageEntityRecognition)
 			if err != nil {
 				return err
 			}
@@ -266,7 +266,7 @@ func newScriptTranslateCmd(deps cliDeps) *cobra.Command {
 				return err
 			}
 
-			cfg, obs, provider, err := initObserverAndProvider(configPath, saveRawDir, "translate", deps)
+			cfg, obs, provider, err := initObserverAndProvider(configPath, saveRawDir, "translate", deps, stageTranslation)
 			if err != nil {
 				return err
 			}
@@ -492,10 +492,16 @@ func newScriptRunCmd(deps cliDeps) *cobra.Command {
 					slog.String("cache_dir", hashCacheDir),
 				)
 			} else {
-				provider, err := initProvider(cfg, saveRawDir, "run", obs)
+				neededProviders := []string{cfg.Translation.Provider}
+				if !recognizedCached {
+					neededProviders = append([]string{cfg.EntityRecognition.Provider}, neededProviders...)
+				}
+				providers, err := initProviders(cfg, saveRawDir, "run", obs, neededProviders...)
 				if err != nil {
 					return err
 				}
+				recProvider := providers[normalizeProviderName(cfg.EntityRecognition.Provider)]
+				trProvider := providers[normalizeProviderName(cfg.Translation.Provider)]
 
 				if recognizedCached {
 					obs.Logger.InfoContext(cmd.Context(), "entity recognition cache hit",
@@ -518,7 +524,7 @@ func newScriptRunCmd(deps cliDeps) *cobra.Command {
 						slog.Int("dictionary_entities", len(dictMapping.Entities)),
 					)
 
-					recognized, err := provider.RecognizeEntities(cmd.Context(), transcript, params)
+					recognized, err := recProvider.RecognizeEntities(cmd.Context(), transcript, params)
 					if err != nil {
 						return err
 					}
@@ -585,7 +591,7 @@ func newScriptRunCmd(deps cliDeps) *cobra.Command {
 					})
 				}
 
-				resp, err := provider.Translate(cmd.Context(), model.TranslateRequest{
+				resp, err := trProvider.Translate(cmd.Context(), model.TranslateRequest{
 					Entity:   effectiveEntities,
 					Dialogue: extracted.Dialogue,
 				}, translateParams)

@@ -31,11 +31,12 @@ func TestParseAppliesDefaultsAndTrimsWhitespace(t *testing.T) {
 	if cfg.CacheDir != DefaultCacheDir {
 		t.Fatalf("expected default cache_dir %q, got %q", DefaultCacheDir, cfg.CacheDir)
 	}
-	if cfg.Provider.BaseURL != "https://example.invalid/v1" {
-		t.Fatalf("unexpected base_url: %q", cfg.Provider.BaseURL)
+	defProv := cfg.Providers[DefaultProviderName]
+	if defProv.BaseURL != "https://example.invalid/v1" {
+		t.Fatalf("unexpected base_url: %q", defProv.BaseURL)
 	}
-	if cfg.Provider.APIKeyEnv != DefaultAPIKeyEnv {
-		t.Fatalf("expected default api_key_env %q, got %q", DefaultAPIKeyEnv, cfg.Provider.APIKeyEnv)
+	if defProv.APIKeyEnv != DefaultAPIKeyEnv {
+		t.Fatalf("expected default api_key_env %q, got %q", DefaultAPIKeyEnv, defProv.APIKeyEnv)
 	}
 	if cfg.EntityRecognition.Model != "gpt-entity" {
 		t.Fatalf("unexpected entity model: %q", cfg.EntityRecognition.Model)
@@ -95,10 +96,11 @@ func TestLoadFromFileAndExplicitOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() unexpected error: %v", err)
 	}
+	defProv := cfg.Providers[DefaultProviderName]
 	if cfg.CacheDir != "/tmp/custom-cache" ||
-		cfg.Provider.APIKeyEnv != "CUSTOM_LLM_KEY" ||
-		cfg.Provider.WaitTime != 2 ||
-		cfg.Provider.RetryTime != 5 ||
+		defProv.APIKeyEnv != "CUSTOM_LLM_KEY" ||
+		defProv.WaitTime != 2 ||
+		defProv.RetryTime != 5 ||
 		cfg.EntityRecognition.MaxAttempt != 2 ||
 		cfg.Translation.BatchSize != 15 ||
 		cfg.Translation.MaxAttempt != 4 ||
@@ -287,15 +289,17 @@ func TestConfigSchemaDefaultsAndDescriptions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Parse() omitting provider failed: %v", err)
 	}
-	if cfg.Provider.APIKeyEnv != DefaultAPIKeyEnv ||
+	if cfg.Providers[DefaultProviderName].APIKeyEnv != DefaultAPIKeyEnv ||
+		cfg.EntityRecognition.Provider != DefaultProviderName ||
 		cfg.EntityRecognition.MaxAttempt != DefaultMaxAttempt ||
+		cfg.Translation.Provider != DefaultProviderName ||
 		cfg.Translation.BatchSize != DefaultBatchSize ||
 		cfg.Translation.MaxAttempt != DefaultMaxAttempt {
 		t.Fatalf("unexpected defaulted config: %#v", cfg)
 	}
 
-	if schema.Properties["provider"].Description == "" {
-		t.Fatal("expected jsonschema description tag to populate provider description")
+	if schema.Properties["provider"].Description == "" || schema.Properties["providers"].Description == "" {
+		t.Fatal("expected jsonschema description tag to populate provider/providers descriptions")
 	}
 }
 
@@ -336,8 +340,8 @@ func TestConfigExpandsTildePaths(t *testing.T) {
 	if loaded.CacheDir != wantCache {
 		t.Fatalf("CacheDir = %q, want %q", loaded.CacheDir, wantCache)
 	}
-	if loaded.Provider.APIKeyFile != wantKeyFile {
-		t.Fatalf("Provider.APIKeyFile = %q, want %q", loaded.Provider.APIKeyFile, wantKeyFile)
+	if loaded.Providers[DefaultProviderName].APIKeyFile != wantKeyFile {
+		t.Fatalf("Providers[default].APIKeyFile = %q, want %q", loaded.Providers[DefaultProviderName].APIKeyFile, wantKeyFile)
 	}
 	if loaded.Observation.Log.File.File != wantLog {
 		t.Fatalf("Log.File.File = %q, want %q", loaded.Observation.Log.File.File, wantLog)
@@ -470,8 +474,8 @@ func TestProviderEndpointParsing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Parse default failed: %v", err)
 	}
-	if defCfg.Provider.Endpoint != DefaultEndpoint {
-		t.Fatalf("default Endpoint = %q, want %q", defCfg.Provider.Endpoint, DefaultEndpoint)
+	if defCfg.Providers[DefaultProviderName].Endpoint != DefaultEndpoint {
+		t.Fatalf("default Endpoint = %q, want %q", defCfg.Providers[DefaultProviderName].Endpoint, DefaultEndpoint)
 	}
 
 	chatCfg, err := Parse([]byte(`{
@@ -482,8 +486,8 @@ func TestProviderEndpointParsing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Parse chat_completions failed: %v", err)
 	}
-	if chatCfg.Provider.Endpoint != "chat_completions" {
-		t.Fatalf("Endpoint = %q, want chat_completions", chatCfg.Provider.Endpoint)
+	if chatCfg.Providers[DefaultProviderName].Endpoint != "chat_completions" {
+		t.Fatalf("Endpoint = %q, want chat_completions", chatCfg.Providers[DefaultProviderName].Endpoint)
 	}
 
 	if _, err := Parse([]byte(`{
@@ -492,5 +496,144 @@ func TestProviderEndpointParsing(t *testing.T) {
 		"translation": {"model": "gpt-translate"}
 	}`)); err == nil {
 		t.Fatal("expected invalid provider.endpoint to fail Parse")
+	}
+}
+
+func TestMultiProvidersParsingAndValidation(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	cfg, err := Parse([]byte(`{
+		"providers": {
+			"cloud": {
+				"endpoint": "responses",
+				"base_url": "https://api.example.com/v1",
+				"api_key_file": "~/cloud.key"
+			},
+			"local": {
+				"endpoint": "chat_completions",
+				"base_url": "http://127.0.0.1:52625/v1/",
+				"api_key": "dummy"
+			}
+		},
+		"entity_recognition": {
+			"provider": "cloud",
+			"model": "gpt-5-mini"
+		},
+		"translation": {
+			"provider": "local",
+			"model": "gemma4-it:12b"
+		}
+	}`))
+	if err != nil {
+		t.Fatalf("Parse multi-providers failed: %v", err)
+	}
+	if cfg.Provider != nil {
+		t.Fatalf("expected cfg.Provider to be folded and cleared, got %#v", cfg.Provider)
+	}
+	if cfg.LegacyProviderUsed {
+		t.Fatal("expected LegacyProviderUsed=false when using providers map")
+	}
+	if cfg.EntityRecognition.Provider != "cloud" || cfg.Translation.Provider != "local" {
+		t.Fatalf("unexpected step providers: rec=%q tr=%q", cfg.EntityRecognition.Provider, cfg.Translation.Provider)
+	}
+	wantCloudKey := filepath.Join(fakeHome, "cloud.key")
+	if cfg.Providers["cloud"].APIKeyFile != wantCloudKey {
+		t.Fatalf("cloud api_key_file = %q, want %q", cfg.Providers["cloud"].APIKeyFile, wantCloudKey)
+	}
+	if cfg.Providers["local"].Endpoint != "chat_completions" {
+		t.Fatalf("local endpoint = %q, want chat_completions", cfg.Providers["local"].Endpoint)
+	}
+
+	// Hybrid: legacy "provider" populates "default" alongside named "providers".
+	hybrid, err := Parse([]byte(`{
+		"provider": {"base_url": "https://api.example.com/v1"},
+		"providers": {
+			"local": {"endpoint": "chat_completions", "api_key": "dummy"}
+		},
+		"entity_recognition": {"model": "gpt-entity"},
+		"translation": {"provider": "local", "model": "gemma4-it:12b"}
+	}`))
+	if err != nil {
+		t.Fatalf("Parse hybrid provider+providers failed: %v", err)
+	}
+	if !hybrid.LegacyProviderUsed {
+		t.Fatal("expected LegacyProviderUsed=true when top-level provider is configured")
+	}
+	if hybrid.EntityRecognition.Provider != DefaultProviderName || hybrid.Translation.Provider != "local" {
+		t.Fatalf("unexpected hybrid providers: rec=%q tr=%q", hybrid.EntityRecognition.Provider, hybrid.Translation.Provider)
+	}
+	if hybrid.Providers[DefaultProviderName].APIKeyEnv != DefaultAPIKeyEnv {
+		t.Fatalf("expected default provider api_key_env, got %q", hybrid.Providers[DefaultProviderName].APIKeyEnv)
+	}
+
+	invalidCases := []struct {
+		name    string
+		raw     string
+		wantSub string
+	}{
+		{
+			name: "missing entity_recognition provider in map",
+			raw: `{
+				"providers": {"local": {"api_key": "dummy"}},
+				"entity_recognition": {"provider": "missing", "model": "m"},
+				"translation": {"provider": "local", "model": "m"}
+			}`,
+			wantSub: "entity_recognition.provider",
+		},
+		{
+			name: "omitted step provider requires default entry",
+			raw: `{
+				"providers": {"local": {"api_key": "dummy"}},
+				"entity_recognition": {"model": "m"},
+				"translation": {"provider": "local", "model": "m"}
+			}`,
+			wantSub: `entity_recognition.provider "default" not found`,
+		},
+		{
+			name: "missing translation provider in map",
+			raw: `{
+				"providers": {"cloud": {"api_key": "k"}},
+				"entity_recognition": {"provider": "cloud", "model": "m"},
+				"translation": {"provider": "nope", "model": "m"}
+			}`,
+			wantSub: "translation.provider",
+		},
+		{
+			name: "both provider and providers.default specified",
+			raw: `{
+				"provider": {"api_key": "k1"},
+				"providers": {"default": {"api_key": "k2"}},
+				"entity_recognition": {"model": "m"},
+				"translation": {"model": "m"}
+			}`,
+			wantSub: "cannot specify both",
+		},
+		{
+			name: "empty providers map",
+			raw: `{
+				"providers": {},
+				"entity_recognition": {"model": "m"},
+				"translation": {"model": "m"}
+			}`,
+			wantSub: "providers must not be empty",
+		},
+		{
+			name: "blank provider name",
+			raw: `{
+				"providers": {"  ": {"api_key": "k"}},
+				"entity_recognition": {"model": "m"},
+				"translation": {"model": "m"}
+			}`,
+			wantSub: "provider name must not be empty",
+		},
+	}
+	for _, tc := range invalidCases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Parse([]byte(tc.raw))
+			if err == nil || !strings.Contains(err.Error(), tc.wantSub) {
+				t.Fatalf("Parse(%s) err = %v, want substring %q", tc.name, err, tc.wantSub)
+			}
+		})
 	}
 }

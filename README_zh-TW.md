@@ -113,19 +113,30 @@ CLI 透過 [`config.Load`](internal/config/config.go) 讀取 JSON 設定檔，�
     "to": "Traditional Chinese",
     "location": "Taiwan (zh-TW)"
   },
-  "provider": {
-    "base_url": "https://api.openai.com/v1",
-    "api_key_env": "OPENAI_API_KEY",
-    "wait_time": 0,
-    "retry_time": 0
+  "providers": {
+    "openai": {
+      "endpoint": "responses",
+      "base_url": "https://api.openai.com/v1",
+      "api_key_env": "OPENAI_API_KEY",
+      "wait_time": 0,
+      "retry_time": 0
+    },
+    "local": {
+      "endpoint": "chat_completions",
+      "base_url": "http://127.0.0.1:52625/v1/",
+      "api_key": "dummy",
+      "retry_time": 2
+    }
   },
   "entity_recognition": {
+    "provider": "openai",
     "model": "gpt-4.1-mini",
     "max_attempt": 3
   },
   "translation": {
-    "model": "gpt-4.1",
-    "batch_size": 20,
+    "provider": "local",
+    "model": "gemma4-it:12b",
+    "batch_size": 15,
     "max_attempt": 3
   },
   "observation": {
@@ -155,16 +166,18 @@ CLI 透過 [`config.Load`](internal/config/config.go) 讀取 JSON 設定檔，�
 | `language` | `from` | 否 | `"Japanese"` | 填入 prompt 模板的來源腳本語言 |
 | `language` | `to` | 否 | `"Traditional Chinese"` | 填入 prompt 模板的目標翻譯語言 |
 | `language` | `location` | 否 | 省略 `language` 時為 `"Taiwan (zh-TW)"` | 選填的目標地區／語系慣用（若手動設定 `language` 且未填 `location`，則不會自動套用） |
-| `provider` | `base_url` | 否 | — | 自訂 OpenAI-compatible API endpoint（須為 `http` / `https` URL） |
-| `provider` | `endpoint` | 否 | `"responses"` | LLM API endpoint 模式：`"responses"`（OpenAI `/v1/responses`）或 `"chat_completions"`（`/v1/chat/completions`） |
-| `provider` | `api_key` | 否 | — | 直接指定 API key（優先權高於 `api_key_file` 與 `api_key_env`） |
-| `provider` | `api_key_file` | 否 | — | 存放 API key 的檔案路徑（支援 `~` 展開，優先權高於 `api_key_env`；適合 NixOS / Home Manager secrets） |
-| `provider` | `api_key_env` | 否 | `"OPENAI_API_KEY"` | 讀取 API key 的環境變數名稱 |
-| `provider` | `wait_time` | 否 | `0` | 每次 LLM 呼叫／翻譯 batch 之間及一般錯誤重試前的等待秒數（`0` 表示不等待） |
-| `provider` | `retry_time` | 否 | `0` | 遇到 HTTP `429`、`5xx`、傳輸層 `unexpected EOF`／`EOF` 或 `net.Error`逾時時的指數退避基準秒數（依序等待 `retry_time * 2^0`, `2^1`, ...；翻譯遇到 `unexpected EOF` 或輸出截斷（`incomplete`／`length`）且 `batch > 10` 時還會將 `batch_size` 動態縮小為 `max(batch * 9 / 10, 10)`，並重算 `total_batch`） |
+| `providers.<name>` | `base_url` | 否 | — | 自訂 OpenAI-compatible API endpoint（須為 `http` / `https` URL）；亦相容舊版頂層 `provider`，會自動對應至 `providers["default"]` |
+| `providers.<name>` | `endpoint` | 否 | `"responses"` | LLM API endpoint 模式：`"responses"`（OpenAI `/v1/responses`）或 `"chat_completions"`（`/v1/chat/completions`） |
+| `providers.<name>` | `api_key` | 否 | — | 直接指定 API key（優先權高於 `api_key_file` 與 `api_key_env`） |
+| `providers.<name>` | `api_key_file` | 否 | — | 存放 API key 的檔案路徑（支援 `~` 展開，優先權高於 `api_key_env`；適合 NixOS / Home Manager secrets） |
+| `providers.<name>` | `api_key_env` | 否 | `"OPENAI_API_KEY"` | 讀取 API key 的環境變數名稱 |
+| `providers.<name>` | `wait_time` | 否 | `0` | 每次 LLM 呼叫／翻譯 batch 之間及一般錯誤重試前的等待秒數（`0` 表示不等待） |
+| `providers.<name>` | `retry_time` | 否 | `0` | 遇到 HTTP `429`、`5xx`、傳輸層 `unexpected EOF`／`EOF` 或 `net.Error`逾時時的指數退避基準秒數（依序等待 `retry_time * 2^0`, `2^1`, ...；翻譯遇到 `unexpected EOF` 或輸出截斷（`incomplete`／`length`）且 `batch > 10` 時還會將 `batch_size` 動態縮小為 `max(batch * 9 / 10, 10)`，並重算 `total_batch`） |
+| `entity_recognition` | `provider` | 否 | `"default"` | 實體辨識使用的 `providers` 名稱（須存在於 `providers` 內） |
 | `entity_recognition` | `model` | 是 | — | 實體辨識使用的模型名稱 |
 | `entity_recognition` | `max_attempt` | 否 | `3` | 實體辨識失敗時的最大嘗試次數（`>= 1`） |
 | `entity_recognition` | `example_file` | 否 | 內建日譯繁中範例 | 選填的自訂 few-shot 範例 JSON 檔路徑（含 `input`、`output`、選填 `explanation`，支援 `~` 展開） |
+| `translation` | `provider` | 否 | `"default"` | 對話翻譯使用的 `providers` 名稱（須存在於 `providers` 內） |
 | `translation` | `model` | 是 | — | 對話翻譯使用的模型名稱 |
 | `translation` | `batch_size` | 否 | `20` | 每次翻譯請求包含的對話單元數（`>= 1`） |
 | `translation` | `max_attempt` | 否 | `3` | 每個翻譯 batch 失敗時的最大嘗試次數（`>= 1`） |

@@ -983,7 +983,7 @@ func TestCLI_DefaultInit(t *testing.T) {
 	if loaded.EntityRecognition.Model != defaultTemplateModel || loaded.Translation.Model != defaultTemplateModel {
 		t.Fatalf("unexpected template models: %+v", loaded)
 	}
-	if loaded.CacheDir != config.DefaultCacheDir || loaded.Provider.APIKeyEnv != config.DefaultAPIKeyEnv || !loaded.Observation.Log.Console.Enable {
+	if loaded.CacheDir != config.DefaultCacheDir || loaded.Providers[config.DefaultProviderName].APIKeyEnv != config.DefaultAPIKeyEnv || !loaded.Observation.Log.Console.Enable {
 		t.Fatalf("expected default settings applied after Load: %+v", loaded)
 	}
 
@@ -1671,10 +1671,11 @@ func TestScriptRunChatCompletionsEndpoint(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	stderr := &bytes.Buffer{}
 	cmd := newRootCmd(cliDeps{
 		stdin:      &bytes.Buffer{},
 		stdout:     &bytes.Buffer{},
-		stderr:     &bytes.Buffer{},
+		stderr:     stderr,
 		stdinIsTTY: func() bool { return false },
 	})
 	cmd.SetArgs([]string{
@@ -1688,5 +1689,210 @@ func TestScriptRunChatCompletionsEndpoint(t *testing.T) {
 	}
 	if len(paths) != 2 || paths[0] != "/v1/chat/completions" || paths[1] != "/v1/chat/completions" {
 		t.Fatalf("unexpected request paths = %v, want [/v1/chat/completions /v1/chat/completions]", paths)
+	}
+	if !strings.Contains(stderr.String(), "deprecated") || !strings.Contains(stderr.String(), "providers.default") {
+		t.Fatalf("expected deprecation warning for top-level provider on stderr, got:\n%s", stderr.String())
+	}
+}
+
+func TestScriptMultiProvidersAndFailFastStartup(t *testing.T) {
+	dir := t.TempDir()
+	inPath := writeTestScript(t, dir)
+	cfgPath := filepath.Join(dir, "config.json")
+
+	var cloudCalls, localCalls int
+	cloudSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cloudCalls++
+		if r.URL.Path != "/v1/responses" {
+			t.Fatalf("cloud unexpected path %s", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer sk-cloud" {
+			t.Fatalf("cloud auth header = %q, want Bearer sk-cloud", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.MarshalWrite(w, map[string]any{
+			"id":     "resp_cloud",
+			"status": "completed",
+			"output": []map[string]any{{
+				"type": "message",
+				"content": []map[string]any{{
+					"type": "output_text",
+					"text": `{"entity":[]}`,
+				}},
+			}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}))
+	defer cloudSrv.Close()
+
+	localSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		localCalls++
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("local unexpected path %s", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer sk-local" {
+			t.Fatalf("local auth header = %q, want Bearer sk-local", got)
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var req struct {
+			Model    string `json:"model"`
+			Messages []struct {
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Fatal(err)
+		}
+		_, inputJSON, ok := strings.Cut(req.Messages[1].Content, "\nInput:\n")
+		if !ok {
+			t.Fatalf("missing Input section:\n%s", req.Messages[1].Content)
+		}
+		var units []model.TranslateUnit
+		if err := json.Unmarshal([]byte(inputJSON), &units); err != nil {
+			t.Fatal(err)
+		}
+		out := make([]model.TranslatedText, 0, len(units))
+		for _, u := range units {
+			out = append(out, model.TranslatedText{Index: u.Index, Text: "「本地譯文」"})
+		}
+		contentBytes, err := json.Marshal(map[string]any{"dialogue": out})
+		if err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.MarshalWrite(w, map[string]any{
+			"id":      "chatcmpl_local",
+			"object":  "chat.completion",
+			"created": 1,
+			"model":   req.Model,
+			"choices": []map[string]any{{
+				"index":         0,
+				"finish_reason": "stop",
+				"message": map[string]any{
+					"role":    "assistant",
+					"content": string(contentBytes),
+				},
+			}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}))
+	defer localSrv.Close()
+
+	cfgRaw := mustMarshalJSONForTest(t, map[string]any{
+		"cache_dir": filepath.Join(dir, "cache"),
+		"providers": map[string]any{
+			"cloud": map[string]any{
+				"endpoint":    "responses",
+				"base_url":    cloudSrv.URL + "/v1",
+				"api_key_env": "CLOUD_PROVIDER_KEY",
+			},
+			"local": map[string]any{
+				"endpoint":    "chat_completions",
+				"base_url":    localSrv.URL + "/v1",
+				"api_key_env": "LOCAL_PROVIDER_KEY",
+			},
+			"unused": map[string]any{
+				"api_key_env": "UNUSED_PROVIDER_KEY",
+			},
+		},
+		"entity_recognition": map[string]any{
+			"provider":    "cloud",
+			"model":       "gpt-entity",
+			"max_attempt": 1,
+		},
+		"translation": map[string]any{
+			"provider":    "local",
+			"model":       "gemma4-it:12b",
+			"batch_size":  10,
+			"max_attempt": 1,
+		},
+	})
+	if err := os.WriteFile(cfgPath, cfgRaw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Fail-fast before any cloud API call when translation provider key is missing.
+	t.Setenv("CLOUD_PROVIDER_KEY", "sk-cloud")
+	t.Setenv("LOCAL_PROVIDER_KEY", "")
+	t.Setenv("UNUSED_PROVIDER_KEY", "")
+
+	failCmd := newRootCmd(cliDeps{
+		stdin:      &bytes.Buffer{},
+		stdout:     &bytes.Buffer{},
+		stderr:     &bytes.Buffer{},
+		stdinIsTTY: func() bool { return false },
+	})
+	failCmd.SetArgs([]string{
+		"script", "run",
+		"-c", cfgPath,
+		"-i", inPath,
+		"-o", filepath.Join(dir, "fail.txt"),
+	})
+	err := failCmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "providers.local") {
+		t.Fatalf("expected startup providers.local error, got: %v", err)
+	}
+	if cloudCalls != 0 || localCalls != 0 {
+		t.Fatalf("expected fail-fast with 0 LLM calls, got cloud=%d local=%d", cloudCalls, localCalls)
+	}
+
+	// 2. Stage command (script recognize) only resolves its own provider ("cloud").
+	recOut := &bytes.Buffer{}
+	recCmd := newRootCmd(cliDeps{
+		stdin:      &bytes.Buffer{},
+		stdout:     recOut,
+		stderr:     &bytes.Buffer{},
+		stdinIsTTY: func() bool { return false },
+	})
+	recCmd.SetArgs([]string{
+		"script", "recognize",
+		"-c", cfgPath,
+		"-i", inPath,
+	})
+	if err := recCmd.Execute(); err != nil {
+		t.Fatalf("script recognize failed: %v", err)
+	}
+	if cloudCalls != 1 || localCalls != 0 {
+		t.Fatalf("expected cloud=1 local=0 after recognize, got cloud=%d local=%d", cloudCalls, localCalls)
+	}
+
+	// 3. Full script run across cloud + local providers (ignoring unused provider), saving distinct raw fixtures.
+	cloudCalls, localCalls = 0, 0
+	t.Setenv("LOCAL_PROVIDER_KEY", "sk-local")
+	rawDir := filepath.Join(dir, "raw")
+	outPath := filepath.Join(dir, "out.txt")
+
+	runStderr := &bytes.Buffer{}
+	runCmd := newRootCmd(cliDeps{
+		stdin:      &bytes.Buffer{},
+		stdout:     &bytes.Buffer{},
+		stderr:     runStderr,
+		stdinIsTTY: func() bool { return false },
+	})
+	runCmd.SetArgs([]string{
+		"script", "run",
+		"-c", cfgPath,
+		"-i", inPath,
+		"-o", outPath,
+		"--save-raw", rawDir,
+	})
+	if err := runCmd.Execute(); err != nil {
+		t.Fatalf("script run failed: %v", err)
+	}
+	if strings.Contains(runStderr.String(), "deprecated") {
+		t.Fatalf("unexpected deprecation warning when using providers map:\n%s", runStderr.String())
+	}
+	if cloudCalls != 1 || localCalls != 1 {
+		t.Fatalf("expected cloud=1 local=1, got cloud=%d local=%d", cloudCalls, localCalls)
+	}
+	for _, rawName := range []string{"run_001.json", "run_002.json"} {
+		if _, err := os.Stat(filepath.Join(rawDir, rawName)); err != nil {
+			t.Fatalf("expected shared sequence raw file %s: %v", rawName, err)
+		}
 	}
 }

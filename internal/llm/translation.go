@@ -48,6 +48,7 @@ var translationSchema = MustSchema[translationOutput]()
 // TranslateParams configures a Translate call. Defaults belong in config validation;
 // Translate rejects non-positive BatchSize/MaxAttempt and empty Model.
 type TranslateParams struct {
+	Provider        string                             `json:"provider,omitzero" jsonschema:"Provider key in top-level providers map (defaults to \"default\")"`
 	Model           string                             `json:"model" jsonschema:"Model name for script translation"`
 	BatchSize       int                                `json:"batch_size" jsonschema:"Number of dialogue units per translation batch"`
 	MaxAttempt      int                                `json:"max_attempt" jsonschema:"Maximum attempts per translation batch"`

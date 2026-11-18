@@ -20,13 +20,14 @@ import (
 )
 
 const (
-	DefaultCacheDir   = "./cache"
-	DefaultEndpoint   = llm.EndpointResponses
-	DefaultAPIKeyEnv  = "OPENAI_API_KEY"
-	DefaultBatchSize  = 20
-	DefaultMaxAttempt = 3
-	DefaultWaitTime   = 0
-	DefaultRetryTime  = 0
+	DefaultCacheDir     = "./cache"
+	DefaultProviderName = "default"
+	DefaultEndpoint     = llm.EndpointResponses
+	DefaultAPIKeyEnv    = "OPENAI_API_KEY"
+	DefaultBatchSize    = 20
+	DefaultMaxAttempt   = 3
+	DefaultWaitTime     = 0
+	DefaultRetryTime    = 0
 )
 
 // ProviderConfig defines connection and credential settings for an
@@ -92,12 +93,24 @@ func (p ProviderConfig) LogValue() slog.Value {
 
 // Config holds application settings aligned with the llm package parameter types.
 type Config struct {
-	CacheDir          string                      `json:"cache_dir,omitzero" jsonschema:"Directory path for cached intermediate script artifacts"`
-	Language          prompt.Language             `json:"language,omitzero" jsonschema:"Source/target localization language and optional regional locale"`
-	Provider          ProviderConfig              `json:"provider" jsonschema:"OpenAI-compatible provider connection settings"`
-	EntityRecognition llm.RecognizeEntitiesParams `json:"entity_recognition" jsonschema:"Entity recognition step parameters"`
-	Translation       llm.TranslateParams         `json:"translation" jsonschema:"Translation step parameters"`
-	Observation       observation.Config          `json:"observation" jsonschema:"Logging and metrics output settings"`
+	CacheDir           string                      `json:"cache_dir,omitzero" jsonschema:"Directory path for cached intermediate script artifacts"`
+	Language           prompt.Language             `json:"language,omitzero" jsonschema:"Source/target localization language and optional regional locale"`
+	Provider           *ProviderConfig             `json:"provider,omitzero" jsonschema:"Legacy shorthand OpenAI-compatible provider settings (mapped to providers[\"default\"])"`
+	Providers          map[string]ProviderConfig   `json:"providers,omitzero" jsonschema:"Named OpenAI-compatible provider connection settings"`
+	EntityRecognition  llm.RecognizeEntitiesParams `json:"entity_recognition" jsonschema:"Entity recognition step parameters"`
+	Translation        llm.TranslateParams         `json:"translation" jsonschema:"Translation step parameters"`
+	Observation        observation.Config          `json:"observation" jsonschema:"Logging and metrics output settings"`
+	LegacyProviderUsed bool                        `json:"-"`
+}
+
+// DefaultProvider returns a ProviderConfig populated with default operational settings.
+func DefaultProvider() ProviderConfig {
+	return ProviderConfig{
+		Endpoint:  DefaultEndpoint,
+		APIKeyEnv: DefaultAPIKeyEnv,
+		WaitTime:  DefaultWaitTime,
+		RetryTime: DefaultRetryTime,
+	}
 }
 
 // Default returns a Config populated with default operational settings.
@@ -106,21 +119,43 @@ func Default() Config {
 	return Config{
 		CacheDir: DefaultCacheDir,
 		Language: prompt.DefaultLanguage(),
-		Provider: ProviderConfig{
-			Endpoint:  DefaultEndpoint,
-			APIKeyEnv: DefaultAPIKeyEnv,
-			WaitTime:  DefaultWaitTime,
-			RetryTime: DefaultRetryTime,
+		Providers: map[string]ProviderConfig{
+			DefaultProviderName: DefaultProvider(),
 		},
 		EntityRecognition: llm.RecognizeEntitiesParams{
+			Provider:   DefaultProviderName,
 			MaxAttempt: DefaultMaxAttempt,
 		},
 		Translation: llm.TranslateParams{
+			Provider:   DefaultProviderName,
 			BatchSize:  DefaultBatchSize,
 			MaxAttempt: DefaultMaxAttempt,
 		},
 		Observation: observation.DefaultConfig(),
 	}
+}
+
+// ProviderByName returns the named ProviderConfig from Providers, normalizing
+// an empty name to DefaultProviderName.
+func (c Config) ProviderByName(name string) (ProviderConfig, error) {
+	key := strings.TrimSpace(name)
+	if key == "" {
+		key = DefaultProviderName
+	}
+	p, ok := c.Providers[key]
+	if !ok {
+		return ProviderConfig{}, fmt.Errorf("config: provider %q not found in providers (available: %s)", key, strings.Join(c.providerNames(), ", "))
+	}
+	return p, nil
+}
+
+func (c Config) providerNames() []string {
+	names := make([]string, 0, len(c.Providers))
+	for name := range c.Providers {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	return names
 }
 
 // Schema builds the JSON Schema for Config, including defaults and constraints
@@ -135,8 +170,8 @@ func Schema() (*jsonschema.Schema, error) {
 	minOneFloat := 1.0
 	minOneInt := 1
 
-	// Allow omitting "provider", "observation", and "language" so defaults fill nested settings.
-	schema.Required = withoutStrings(schema.Required, "provider", "observation", "language")
+	// Allow omitting "provider", "providers", "observation", and "language" so defaults fill nested settings.
+	schema.Required = withoutStrings(schema.Required, "provider", "providers", "observation", "language")
 	if cacheProp := schema.Properties["cache_dir"]; cacheProp != nil {
 		b, err := json.Marshal(DefaultCacheDir)
 		if err != nil {
@@ -144,37 +179,12 @@ func Schema() (*jsonschema.Schema, error) {
 		}
 		cacheProp.Default = b
 	}
-	if prov := schema.Properties["provider"]; prov != nil {
-		if endpointProp := prov.Properties["endpoint"]; endpointProp != nil {
-			b, err := json.Marshal(DefaultEndpoint)
-			if err != nil {
-				return nil, fmt.Errorf("config: marshal default endpoint: %w", err)
-			}
-			endpointProp.Default = b
-			endpointProp.Enum = []any{llm.EndpointResponses, llm.EndpointChatCompletions}
-		}
-		if apiKeyEnv := prov.Properties["api_key_env"]; apiKeyEnv != nil {
-			b, err := json.Marshal(DefaultAPIKeyEnv)
-			if err != nil {
-				return nil, fmt.Errorf("config: marshal default api_key_env: %w", err)
-			}
-			apiKeyEnv.Default = b
-		}
-		if waitProp := prov.Properties["wait_time"]; waitProp != nil {
-			b, err := json.Marshal(DefaultWaitTime)
-			if err != nil {
-				return nil, fmt.Errorf("config: marshal default wait_time: %w", err)
-			}
-			waitProp.Default = b
-			waitProp.Minimum = &minZeroFloat
-		}
-		if retryProp := prov.Properties["retry_time"]; retryProp != nil {
-			b, err := json.Marshal(DefaultRetryTime)
-			if err != nil {
-				return nil, fmt.Errorf("config: marshal default retry_time: %w", err)
-			}
-			retryProp.Default = b
-			retryProp.Minimum = &minZeroFloat
+	if err := configureProviderSchema(schema.Properties["provider"], minZeroFloat); err != nil {
+		return nil, err
+	}
+	if provs := schema.Properties["providers"]; provs != nil {
+		if err := configureProviderSchema(provs.AdditionalProperties, minZeroFloat); err != nil {
+			return nil, err
 		}
 	}
 
@@ -195,7 +205,10 @@ func Schema() (*jsonschema.Schema, error) {
 	}
 
 	if rec := schema.Properties["entity_recognition"]; rec != nil {
-		rec.Required = withoutStrings(rec.Required, "max_attempt")
+		rec.Required = withoutStrings(rec.Required, "provider", "max_attempt")
+		if err := setStringDefault(rec.Properties["provider"], DefaultProviderName, "config: marshal default provider"); err != nil {
+			return nil, err
+		}
 		if modelProp := rec.Properties["model"]; modelProp != nil {
 			modelProp.MinLength = &minOneInt
 		}
@@ -210,7 +223,10 @@ func Schema() (*jsonschema.Schema, error) {
 	}
 
 	if tr := schema.Properties["translation"]; tr != nil {
-		tr.Required = withoutStrings(tr.Required, "batch_size", "max_attempt")
+		tr.Required = withoutStrings(tr.Required, "provider", "batch_size", "max_attempt")
+		if err := setStringDefault(tr.Properties["provider"], DefaultProviderName, "config: marshal default provider"); err != nil {
+			return nil, err
+		}
 		if modelProp := tr.Properties["model"]; modelProp != nil {
 			modelProp.MinLength = &minOneInt
 		}
@@ -233,6 +249,50 @@ func Schema() (*jsonschema.Schema, error) {
 	}
 
 	return schema, nil
+}
+
+func setStringDefault(prop *jsonschema.Schema, val, errContext string) error {
+	if prop == nil {
+		return nil
+	}
+	b, err := json.Marshal(val)
+	if err != nil {
+		return fmt.Errorf("%s: %w", errContext, err)
+	}
+	prop.Default = b
+	return nil
+}
+
+func configureProviderSchema(prov *jsonschema.Schema, minZeroFloat float64) error {
+	if prov == nil {
+		return nil
+	}
+	if endpointProp := prov.Properties["endpoint"]; endpointProp != nil {
+		if err := setStringDefault(endpointProp, DefaultEndpoint, "config: marshal default endpoint"); err != nil {
+			return err
+		}
+		endpointProp.Enum = []any{llm.EndpointResponses, llm.EndpointChatCompletions}
+	}
+	if err := setStringDefault(prov.Properties["api_key_env"], DefaultAPIKeyEnv, "config: marshal default api_key_env"); err != nil {
+		return err
+	}
+	if waitProp := prov.Properties["wait_time"]; waitProp != nil {
+		b, err := json.Marshal(DefaultWaitTime)
+		if err != nil {
+			return fmt.Errorf("config: marshal default wait_time: %w", err)
+		}
+		waitProp.Default = b
+		waitProp.Minimum = &minZeroFloat
+	}
+	if retryProp := prov.Properties["retry_time"]; retryProp != nil {
+		b, err := json.Marshal(DefaultRetryTime)
+		if err != nil {
+			return fmt.Errorf("config: marshal default retry_time: %w", err)
+		}
+		retryProp.Default = b
+		retryProp.Minimum = &minZeroFloat
+	}
+	return nil
 }
 
 func withoutStrings(list []string, exclude ...string) []string {
@@ -293,14 +353,31 @@ func Parse(data []byte) (Config, error) {
 	// jsonschema-go skips recursing into required object properties such as
 	// entity_recognition and translation when applying defaults.
 	cfg := Default()
+	cfg.Providers = nil
+	var (
+		rawProviders    map[string]any
+		rawProvider     map[string]any
+		hasProvidersKey bool
+	)
 	if obj, ok := instance.(map[string]any); ok {
 		if _, hasLang := obj["language"]; hasLang {
 			// Clear default locale so specifying e.g. {"to": "English"}
 			// without "location" does not inherit "Taiwan (zh-TW)".
 			cfg.Language = prompt.Language{}
 		}
+		if v, exists := obj["providers"]; exists {
+			hasProvidersKey = true
+			rawProviders, _ = v.(map[string]any)
+		}
+		if v, exists := obj["provider"]; exists {
+			rawProvider, _ = v.(map[string]any)
+		}
 	}
 	if err := json.Unmarshal(data, &cfg, json.RejectUnknownMembers(true)); err != nil {
+		return Config{}, err
+	}
+
+	if err := cfg.mergeAndDefaultProviders(rawProvider, rawProviders, hasProvidersKey); err != nil {
 		return Config{}, err
 	}
 
@@ -314,19 +391,74 @@ func Parse(data []byte) (Config, error) {
 	return cfg, nil
 }
 
+func (c *Config) mergeAndDefaultProviders(rawProvider, rawProviders map[string]any, hasProvidersKey bool) error {
+	for name, p := range c.Providers {
+		rawEntry, _ := rawProviders[name].(map[string]any)
+		applyProviderJSONDefaults(rawEntry, &p)
+		c.Providers[name] = p
+	}
+	if c.Provider != nil {
+		if _, exists := c.Providers[DefaultProviderName]; exists {
+			return fmt.Errorf("config: cannot specify both \"provider\" and \"providers.%s\"", DefaultProviderName)
+		}
+		if c.Providers == nil {
+			c.Providers = make(map[string]ProviderConfig, 1)
+		}
+		p := *c.Provider
+		applyProviderJSONDefaults(rawProvider, &p)
+		c.Providers[DefaultProviderName] = p
+		c.Provider = nil
+		c.LegacyProviderUsed = true
+	} else if !hasProvidersKey && len(c.Providers) == 0 {
+		c.Providers = map[string]ProviderConfig{
+			DefaultProviderName: DefaultProvider(),
+		}
+	}
+	return nil
+}
+
+func applyProviderJSONDefaults(raw map[string]any, p *ProviderConfig) {
+	if p.Endpoint == "" {
+		p.Endpoint = DefaultEndpoint
+	}
+	_, hasAPIKeyEnv := raw["api_key_env"]
+	if !hasAPIKeyEnv && strings.TrimSpace(p.APIKey) == "" && strings.TrimSpace(p.APIKeyFile) == "" && strings.TrimSpace(p.APIKeyEnv) == "" {
+		p.APIKeyEnv = DefaultAPIKeyEnv
+	}
+}
+
+func normalizeProvider(p ProviderConfig) ProviderConfig {
+	p.Endpoint = strings.ToLower(strings.TrimSpace(p.Endpoint))
+	if p.Endpoint == "" {
+		p.Endpoint = DefaultEndpoint
+	}
+	p.BaseURL = strings.TrimSpace(p.BaseURL)
+	p.APIKey = strings.TrimSpace(p.APIKey)
+	p.APIKeyFile = strings.TrimSpace(p.APIKeyFile)
+	p.APIKeyEnv = strings.TrimSpace(p.APIKeyEnv)
+	return p
+}
+
 func (c *Config) normalize() {
 	c.CacheDir = strings.TrimSpace(c.CacheDir)
 	c.Language.Normalize()
-	c.Provider.Endpoint = strings.ToLower(strings.TrimSpace(c.Provider.Endpoint))
-	if c.Provider.Endpoint == "" {
-		c.Provider.Endpoint = DefaultEndpoint
+	if c.Provider != nil {
+		p := normalizeProvider(*c.Provider)
+		c.Provider = &p
 	}
-	c.Provider.BaseURL = strings.TrimSpace(c.Provider.BaseURL)
-	c.Provider.APIKey = strings.TrimSpace(c.Provider.APIKey)
-	c.Provider.APIKeyFile = strings.TrimSpace(c.Provider.APIKeyFile)
-	c.Provider.APIKeyEnv = strings.TrimSpace(c.Provider.APIKeyEnv)
+	for name, p := range c.Providers {
+		c.Providers[name] = normalizeProvider(p)
+	}
+	c.EntityRecognition.Provider = strings.TrimSpace(c.EntityRecognition.Provider)
+	if c.EntityRecognition.Provider == "" {
+		c.EntityRecognition.Provider = DefaultProviderName
+	}
 	c.EntityRecognition.Model = strings.TrimSpace(c.EntityRecognition.Model)
 	c.EntityRecognition.ExampleFile = strings.TrimSpace(c.EntityRecognition.ExampleFile)
+	c.Translation.Provider = strings.TrimSpace(c.Translation.Provider)
+	if c.Translation.Provider == "" {
+		c.Translation.Provider = DefaultProviderName
+	}
 	c.Translation.Model = strings.TrimSpace(c.Translation.Model)
 	c.Translation.ExampleFile = strings.TrimSpace(c.Translation.ExampleFile)
 	c.Observation.Normalize()
@@ -338,12 +470,17 @@ func (c *Config) resolvePaths() error {
 		return fmt.Errorf("config: cache_dir: %w", err)
 	}
 	c.CacheDir = cacheDir
-	if c.Provider.APIKeyFile != "" {
-		keyFile, err := pathutil.ExpandHome(c.Provider.APIKeyFile)
-		if err != nil {
-			return fmt.Errorf("config: provider.api_key_file: %w", err)
+	for _, name := range c.providerNames() {
+		p := c.Providers[name]
+		if p.APIKeyFile == "" {
+			continue
 		}
-		c.Provider.APIKeyFile = keyFile
+		keyFile, err := pathutil.ExpandHome(p.APIKeyFile)
+		if err != nil {
+			return fmt.Errorf("config: providers.%s.api_key_file: %w", name, err)
+		}
+		p.APIKeyFile = keyFile
+		c.Providers[name] = p
 	}
 	if err := resolveExampleFile("entity_recognition.example_file", &c.EntityRecognition.ExampleFile, &c.EntityRecognition.Example); err != nil {
 		return err
@@ -379,33 +516,56 @@ func resolveExampleFile[T any](field string, pathPtr *string, dst **T) error {
 	return nil
 }
 
+func validateProvider(prefix string, p ProviderConfig) error {
+	switch p.Endpoint {
+	case llm.EndpointResponses, llm.EndpointChatCompletions:
+	default:
+		return fmt.Errorf("invalid %s.endpoint %q (expected %q or %q)", prefix, p.Endpoint, llm.EndpointResponses, llm.EndpointChatCompletions)
+	}
+	if p.BaseURL != "" {
+		u, err := url.Parse(p.BaseURL)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return fmt.Errorf("invalid %s.base_url %q", prefix, p.BaseURL)
+		}
+	}
+	if p.APIKey == "" && p.APIKeyFile == "" && p.APIKeyEnv == "" {
+		return fmt.Errorf("%s requires api_key, api_key_file, or api_key_env", prefix)
+	}
+	if p.WaitTime < 0 {
+		return fmt.Errorf("%s.wait_time must be non-negative (got %d)", prefix, p.WaitTime)
+	}
+	if p.RetryTime < 0 {
+		return fmt.Errorf("%s.retry_time must be non-negative (got %d)", prefix, p.RetryTime)
+	}
+	return nil
+}
+
 // Validate checks semantic constraints not expressible in structural JSON Schema
 // (such as URL syntax and non-whitespace strings).
 func (c Config) Validate() error {
 	if c.CacheDir == "" {
 		return errors.New("cache_dir must not be empty")
 	}
-	switch c.Provider.Endpoint {
-	case llm.EndpointResponses, llm.EndpointChatCompletions:
-	default:
-		return fmt.Errorf("invalid provider.endpoint %q (expected %q or %q)", c.Provider.Endpoint, llm.EndpointResponses, llm.EndpointChatCompletions)
+	if len(c.Providers) == 0 {
+		return errors.New("providers must not be empty")
 	}
-	if c.Provider.BaseURL != "" {
-		u, err := url.Parse(c.Provider.BaseURL)
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-			return fmt.Errorf("invalid provider.base_url %q", c.Provider.BaseURL)
+	names := c.providerNames()
+	for _, name := range names {
+		trimmed := strings.TrimSpace(name)
+		if trimmed == "" {
+			return errors.New("provider name must not be empty")
+		}
+		if trimmed != name {
+			return fmt.Errorf("provider name %q must not have leading or trailing whitespace", name)
+		}
+		if err := validateProvider("providers."+name, c.Providers[name]); err != nil {
+			return err
 		}
 	}
-	if c.Provider.APIKey == "" && c.Provider.APIKeyFile == "" && c.Provider.APIKeyEnv == "" {
-		return errors.New("provider requires api_key, api_key_file, or api_key_env")
-	}
-	if c.Provider.WaitTime < 0 {
-		return fmt.Errorf("provider.wait_time must be non-negative (got %d)", c.Provider.WaitTime)
-	}
-	if c.Provider.RetryTime < 0 {
-		return fmt.Errorf("provider.retry_time must be non-negative (got %d)", c.Provider.RetryTime)
-	}
 
+	if _, err := c.ProviderByName(c.EntityRecognition.Provider); err != nil {
+		return fmt.Errorf("entity_recognition.provider %q not found in providers (available: %s)", c.EntityRecognition.Provider, strings.Join(names, ", "))
+	}
 	if c.EntityRecognition.Model == "" {
 		return errors.New("entity_recognition.model must not be empty")
 	}
@@ -418,6 +578,9 @@ func (c Config) Validate() error {
 		}
 	}
 
+	if _, err := c.ProviderByName(c.Translation.Provider); err != nil {
+		return fmt.Errorf("translation.provider %q not found in providers (available: %s)", c.Translation.Provider, strings.Join(names, ", "))
+	}
 	if c.Translation.Model == "" {
 		return errors.New("translation.model must not be empty")
 	}

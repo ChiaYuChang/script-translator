@@ -28,19 +28,23 @@ in {
             to = "Traditional Chinese";
             location = "Taiwan (zh-TW)";
           };
-          provider = {
-            endpoint = "responses"; # or "chat_completions"
-            base_url = "https://api.openai.com/v1";
-            api_key_file = "/run/secrets/openai_api_key";
-            # Or fall back to an environment variable:
-            # api_key_env = "OPENAI_API_KEY";
-            wait_time = 1;
-            retry_time = 5;
+          providers = {
+            openai = {
+              endpoint = "responses"; # or "chat_completions"
+              base_url = "https://api.openai.com/v1";
+              api_key_file = "/run/secrets/openai_api_key";
+              # Or fall back to an environment variable:
+              # api_key_env = "OPENAI_API_KEY";
+              wait_time = 1;
+              retry_time = 5;
+            };
           };
           entity_recognition = {
+            provider = "openai";
             model = "gpt-4.1-mini";
           };
           translation = {
+            provider = "openai";
             model = "gpt-4.1";
             batch_size = 20;
           };
@@ -49,11 +53,12 @@ in {
       description = ''
         Configuration written declaratively to `script-translator/config.json`
         when non-empty. Supports top-level `language` (`from`, `to`, optional
-        `location`), `provider`, `entity_recognition` (including optional
-        `example_file`), `translation` (including optional `example_file`), and
-        `observation`. Prefer `provider.api_key_file` (e.g., for
-        sops-nix/agenix) or `provider.api_key_env` over inline `provider.api_key`
-        since Nix store files are world-readable.
+        `location`), `providers` (or legacy `provider` mapped to `"default"`),
+        `entity_recognition` (including optional `provider`, `example_file`),
+        `translation` (including optional `provider`, `example_file`), and
+        `observation`. Prefer `api_key_file` (e.g., for sops-nix/agenix) or
+        `api_key_env` over inline `api_key` since Nix store files are
+        world-readable.
       '';
     };
   };
